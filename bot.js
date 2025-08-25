@@ -1,7 +1,7 @@
 const mineflayer = require('mineflayer');
 
 const bot = mineflayer.createBot({
-  host: 'pibblesmp.serv.cx', // The cracked server address
+  host: '15.235.144.50', // The cracked server address
   port: 25566,               // Default port; change if needed
   username: 'TryChlorophyll', // Any name you want (must not be taken by another player)
   auth: 'offline'           // Important: disables online (Microsoft) auth
