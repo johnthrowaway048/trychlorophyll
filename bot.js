@@ -249,10 +249,9 @@ function sleep(ms) { return new Promise(res => setTimeout(res, ms)) }
 
 // ----------------- CHAT HANDLER -----------------
 bot.on('message', async (jsonMsg) => {
-  console.log('message recieved');
-  
   // Convert JSON chat message to plain text
   const message = jsonMsg.toString(); 
+  console.log(message)
   if (!message) return;
 
   // Ignore messages from the bot itself
