@@ -101,7 +101,11 @@ async function ensurePathfinderLoaded() {
 
 // ----------------- CHAT HANDLER -----------------
 bot.on('chat', async (username, message) => {
-  if (!username) return
+  if (!username) { const match = message.match(/^<?(\w+)>?\s*(.*)/); // attempt to parse <username> Message 
+	if (match) { username = match[1]; message = match[2]; } 
+	else { username = 'Unknown'; } } 
+
+  if (username === bot.username) return; // ignore bot itself console.log([CHAT] ${username}: ${message});
 
   if (ignoredPlayers.includes(username)) return // ignore ignored players
   if (username === bot.username) return
