@@ -1,15 +1,20 @@
 {
-  "name": "trychlorophyll",
+  "name": "minecraft-bot",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Minecraft bot with Google Gemini AI for instructions and personality",
+  "type": "module",
+  "main": "bot.js",
   "scripts": {
-  "start": "node bot.js"
+    "start": "node bot.js",
+    "test-llm": "node llm_test.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "mineflayer": "^4.32.0"
+    "@google/generative-ai": "^0.24.0",
+    "dotenv": "^17.2.1",
+    "minecraft-data": "*",
+    "mineflayer": "^4.32.0",
+    "mineflayer-auto-auth": "^2.0.0",
+    "mineflayer-auto-eat": "^5.0.3",
+    "mineflayer-pathfinder": "^2.4.3"
   }
 }
