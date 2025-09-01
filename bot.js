@@ -146,7 +146,7 @@ bot.on('chat', async (username, message) => {
   if (!username || username === bot.username) return
   if (ignoredPlayers.includes(username)) return // skip ignored players
 
-  console.log([CHAT] ${username}: ${message});
+  console.log('[CHAT] ${username}: ${message}');
 
   const msgLower = message.toLowerCase()
   const mentioned = botNames.some(n => msgLower.includes(n))
@@ -154,7 +154,7 @@ bot.on('chat', async (username, message) => {
 
   const isTrusted = trustedPlayers.includes(username)
   
-  console.log("Mentioned by ${username}, generating response")
+  console.log('Mentioned by ${username}, generating response')
 
   // Owner-only trust/ignore management
   if (username === ownerName) {
