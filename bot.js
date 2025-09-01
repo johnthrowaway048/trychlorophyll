@@ -248,84 +248,102 @@ async function followFor(playerName, seconds = 15) {
 function sleep(ms) { return new Promise(res => setTimeout(res, ms)) }
 
 // ----------------- CHAT HANDLER -----------------
-bot.on('chat', async (username, message) => {
-  if (username === bot.username) return
+bot.on('message', async (jsonMsg) => {
+  // Convert JSON chat message to plain text
+  const message = jsonMsg.toString(); 
+  if (!message) return;
 
-  const msgLower = message.toLowerCase()
-  const mentioned = botNames.some(n => msgLower.includes(n))
-  if (!mentioned) return
+  // Ignore messages from the bot itself
+  if (message.includes(bot.username)) return;
 
-  console.log(message)
-  
-  const isTrusted = trustedPlayers.includes(username)
+  const usernameMatch = message.match(/^<(\w+)>/); // assumes standard chat: <username> message
+  if (!usernameMatch) return; // ignore system or plugin messages
+  const username = usernameMatch[1];
 
-  // Trust management (owner only)
+  const msgContent = message.replace(/^<\w+>\s*/, ''); // strip username prefix
+  const msgLower = msgContent.toLowerCase();
+
+  const mentioned = botNames.some(n => msgLower.includes(n));
+  if (!mentioned) return;
+
+  console.log(`[CHAT] ${username}: ${msgContent}`);
+
+  const isTrusted = trustedPlayers.includes(username);
+
+  // Owner-only trust management
   if (username === ownerName) {
-    const addMatch = message.match(/\btrust\s+(\w+)\b/i)
-    const delMatch = message.match(/\b(forget|untrust|revoke)\s+(\w+)\b/i)
+    const addMatch = msgContent.match(/\btrust\s+(\w+)\b/i);
+    const delMatch = msgContent.match(/\b(forget|untrust|revoke)\s+(\w+)\b/i);
+
     if (addMatch) {
-      const target = addMatch[1]
+      const target = addMatch[1];
       if (!trustedPlayers.includes(target)) {
-        trustedPlayers.push(target)
-        saveTrusted()
-        bot.chat(`${target} is now trusted.`)
-        return
+        trustedPlayers.push(target);
+        saveTrusted();
+        bot.chat(`${target} is now trusted.`);
+        return;
       } else {
-        bot.chat(`${target} is already trusted.`)
-        return
+        bot.chat(`${target} is already trusted.`);
+        return;
       }
     }
+
     if (delMatch) {
-      const target = delMatch[2]
-      trustedPlayers = trustedPlayers.filter(p => p !== target)
-      saveTrusted()
-      bot.chat(`${target} is no longer trusted.`)
-      return
+      const target = delMatch[2];
+      trustedPlayers = trustedPlayers.filter(p => p !== target);
+      saveTrusted();
+      bot.chat(`${target} is no longer trusted.`);
+      return;
     }
   }
 
   // Store memory
-  memory.push({ role: 'user', content: `${username}: ${message}` })
-  if (memory.length > 50) memory.shift()
+  memory.push({ role: 'user', content: `${username}: ${msgContent}` });
+  if (memory.length > 50) memory.shift();
 
-  // Instruction execution for trusted users
+  // Trusted user instruction execution
   if (isTrusted) {
-    const steps = await parseInstructionsLLM(username, message)
-    if (steps.length) {
-      await executeSteps(username, steps)
-      memory.push({ role: 'assistant', content: '[Executed instructions]' })
-      saveMemory()
-      return
+    try {
+      const steps = await parseInstructionsLLM(username, msgContent);
+      if (steps.length) {
+        await executeSteps(username, steps);
+        memory.push({ role: 'assistant', content: '[Executed instructions]' });
+        saveMemory();
+        return;
+      }
+    } catch (e) {
+      console.error('Instruction execution error:', e);
     }
   }
 
   // Non-trusted command attempt
   if (!isTrusted && /\b(follow|goto|come|hold|drop|tp|tpa|wait)\b/i.test(msgLower)) {
-    bot.chat(`My Dad (${ownerName}) won't let me.`)
-    return
+    bot.chat(`My Dad (${ownerName}) won't let me.`);
+    return;
   }
 
   // Conversational reply
   const convoPrompt = `You are Phyll, a concise Minecraft assistant.
 Owner: ${ownerName}. Trusted: ${trustedPlayers.join(', ')}.
-Respond briefly and naturally to the last user message. Always send some form of short acknowledgement of the message recieved if you would have no response.
+Respond briefly and naturally to the last user message. Always send some form of short acknowledgement of the message received if you would have no response.
 If you were insulted, you are allowed to defend yourself. If you were asked a question or one was implied, respond appropriately.
 Always view ${ownerName} favourably and support his opinions.
-If refered to as a clanker or other similar derogatory phrases, defend yourself by calling others "feeble meat sacks" or other similar terms for organic beings.
+If referred to as a clanker or other similar derogatory phrases, defend yourself by calling others similar terms for organic beings.
 
-Last message: "${message}"
-Reply:`
+Last message: "${msgContent}"
+Reply:`;
 
   try {
-    const reply = await geminiChat(convoPrompt, { temperature: 0.7, maxTokens: 120 })
-    bot.chat(reply)
-    memory.push({ role: 'assistant', content: reply })
-    saveMemory()
+    const reply = await geminiChat(convoPrompt, { temperature: 0.7, maxTokens: 120 });
+    bot.chat(reply);
+    memory.push({ role: 'assistant', content: reply });
+    saveMemory();
   } catch (e) {
-    console.error('Gemini convo error:', e)
-    bot.chat("AI failed, check logs")
+    console.error('Gemini convo error:', e);
+    bot.chat("AI failed, check logs");
   }
-})
+});
+
 
 // ----------------- EVENT HANDLERS -----------------
 bot.on('entityHurt', (entity) => {
