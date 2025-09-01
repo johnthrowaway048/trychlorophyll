@@ -248,33 +248,21 @@ async function followFor(playerName, seconds = 15) {
 function sleep(ms) { return new Promise(res => setTimeout(res, ms)) }
 
 // ----------------- CHAT HANDLER -----------------
-bot.on('message', async (jsonMsg) => {
-  // Convert JSON chat message to plain text
-  const message = jsonMsg.toString(); 
-  console.log(message)
-  if (!message) return;
+bot.on('chat', async (username, message) => {
+  if (username === bot.username) return; // ignore bot itself
 
-  // Ignore messages from the bot itself
-  if (message.includes(bot.username)) return;
+  console.log(`[CHAT] ${username}: ${message}`);
 
-  const usernameMatch = message.match(/^<(\w+)>/); // assumes standard chat: <username> message
-  if (!usernameMatch) return; // ignore system or plugin messages
-  const username = usernameMatch[1];
-
-  const msgContent = message.replace(/^<\w+>\s*/, ''); // strip username prefix
-  const msgLower = msgContent.toLowerCase();
-
+  const msgLower = message.toLowerCase();
   const mentioned = botNames.some(n => msgLower.includes(n));
   if (!mentioned) return;
-
-  console.log(`[CHAT] ${username}: ${msgContent}`);
 
   const isTrusted = trustedPlayers.includes(username);
 
   // Owner-only trust management
   if (username === ownerName) {
-    const addMatch = msgContent.match(/\btrust\s+(\w+)\b/i);
-    const delMatch = msgContent.match(/\b(forget|untrust|revoke)\s+(\w+)\b/i);
+    const addMatch = message.match(/\btrust\s+(\w+)\b/i);
+    const delMatch = message.match(/\b(forget|untrust|revoke)\s+(\w+)\b/i);
 
     if (addMatch) {
       const target = addMatch[1];
@@ -299,13 +287,13 @@ bot.on('message', async (jsonMsg) => {
   }
 
   // Store memory
-  memory.push({ role: 'user', content: `${username}: ${msgContent}` });
+  memory.push({ role: 'user', content: `${username}: ${message}` });
   if (memory.length > 50) memory.shift();
 
   // Trusted user instruction execution
   if (isTrusted) {
     try {
-      const steps = await parseInstructionsLLM(username, msgContent);
+      const steps = await parseInstructionsLLM(username, message);
       if (steps.length) {
         await executeSteps(username, steps);
         memory.push({ role: 'assistant', content: '[Executed instructions]' });
@@ -331,7 +319,7 @@ If you were insulted, you are allowed to defend yourself. If you were asked a qu
 Always view ${ownerName} favourably and support his opinions.
 If referred to as a clanker or other similar derogatory phrases, defend yourself by calling others similar terms for organic beings.
 
-Last message: "${msgContent}"
+Last message: "${message}"
 Reply:`;
 
   try {
@@ -344,6 +332,7 @@ Reply:`;
     bot.chat("AI failed, check logs");
   }
 });
+
 
 
 // ----------------- EVENT HANDLERS -----------------
