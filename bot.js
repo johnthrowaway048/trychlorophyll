@@ -105,9 +105,11 @@ async function ensurePathfinderLoaded() {
 }
 
 // ----------------- INSTRUCTION PARSER -----------------
+// ----------------- INSTRUCTION PARSER -----------------
 async function parseInstructionsLLM(username, message) {
-  const planPrompt = `You are a planner for a Minecraft bot named TryChlorophyll/Phyll.
-Given an instruction, output a JSON plan of steps. If told to move to a set of coordinates, prefer to pathfind there. If told to move to a player, prefer to teleport there.
+  const basePrompt = (msg, strict = false) => `
+You are a planner for a Minecraft bot named TryChlorophyll/Phyll.
+Given an instruction, output a JSON plan of steps.
 
 Valid actions:
 - {"action":"follow","player":"<player>"}
@@ -117,24 +119,109 @@ Valid actions:
 
 Rules:
 - Output ONLY valid JSON, no extra text.
+- Always wrap output in {"steps":[ ... ]}
 - Use integers for numbers.
 - If the player to follow/teleport isn't specified, use "${username}".
 - If nothing actionable, return {"steps": []}.
+${strict ? "STRICT: Do not include any explanations, only JSON." : ""}
 
-Instruction: "${message}"
-JSON:`
+Instruction: "${msg}"
+JSON:`.trim()
+
+  async function askArli(prompt) {
+    const response = await arliChat(prompt, { temperature: 0.3 })
+    const jsonMatch = response.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return null
+    try {
+      return JSON.parse(jsonMatch[0])
+    } catch {
+      return null
+    }
+  }
 
   try {
-    const response = await arliChat(planPrompt, { temperature: 0.3 })
-    const jsonMatch = response.match(/\{[\s\S]*\}/)
-    const jsonText = jsonMatch ? jsonMatch[0] : response
-    const parsed = JSON.parse(jsonText)
-    return parsed.steps || []
+    // First attempt
+    let parsed = await askArli(basePrompt(message))
+    if (parsed && Array.isArray(parsed.steps)) return parsed.steps
+
+    // Retry with stricter instructions
+    console.warn("Retrying instruction parsing with stricter prompt...")
+    parsed = await askArli(basePrompt(message, true))
+    if (parsed && Array.isArray(parsed.steps)) return parsed.steps
+
+    // Final fallback
+    console.error("Failed to parse valid JSON after retries.")
+    return []
   } catch (e) {
-    console.error('Instruction parsing error:', e)
+    console.error("Instruction parsing error:", e)
     return []
   }
 }
+
+// ----------------- EXECUTE STEPS -----------------
+async function executeSteps(username, steps) {
+  for (const step of steps) {
+    try {
+      switch (step.action) {
+        case "follow": {
+          await ensurePathfinderLoaded()
+          const target = bot.players[step.player]?.entity
+          if (!target) {
+            bot.chat(`I can’t see ${step.player} right now.`)
+            continue
+          }
+          const goal = new goals.GoalFollow(target, 1)
+          bot.pathfinder.setGoal(goal, true)
+          bot.chat(`Okay, following ${step.player}.`)
+
+          // Cancel follow after 60s
+          setTimeout(() => {
+            if (bot.pathfinder.goal instanceof goals.GoalFollow) {
+              bot.pathfinder.setGoal(null)
+              bot.chat(`Stopped following ${step.player}.`)
+            }
+          }, 60000)
+          break
+        }
+
+        case "goto": {
+          await ensurePathfinderLoaded()
+          const { x, y, z } = step
+          if ([x, y, z].some(v => typeof v !== "number")) {
+            bot.chat("That location doesn’t look valid.")
+            continue
+          }
+          const goal = new goals.GoalBlock(x, y, z)
+          bot.pathfinder.setGoal(goal)
+          bot.chat(`On my way to ${x}, ${y}, ${z}.`)
+          break
+        }
+
+        case "tpa": {
+          bot.chat(`/tpa ${step.player}`)
+          bot.chat(`Sent teleport request to ${step.player}.`)
+          break
+        }
+
+        case "wait": {
+          const seconds = Math.max(1, parseInt(step.seconds, 10) || 1)
+          bot.chat(`Waiting ${seconds} seconds.`)
+          await new Promise(resolve => setTimeout(resolve, seconds * 1000))
+          bot.chat(`Done waiting.`)
+          break
+        }
+
+        default:
+          console.warn("Unknown action:", step)
+      }
+    } catch (err) {
+      console.error("Error executing step:", step, err)
+      bot.chat(`I couldn’t complete a step: ${step.action}`)
+    }
+  }
+}
+
+
 
 // ----------------- CHAT HANDLER -----------------
 bot.on('chat', async (username, message) => {
