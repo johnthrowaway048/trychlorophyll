@@ -16,6 +16,29 @@ const memoryFile = './memory.json'
 const trustedFile = './trusted.json'
 const ignoredFile = './ignored.json'
 
+// ----------------- COMPROMISE NLP -----------------
+let nlp = null;
+try {
+  // Dynamic import for Compromise
+  const compromiseImport = await import('compromise');
+  nlp = compromiseImport.default;
+  console.log('Compromise NLP loaded successfully');
+} catch (e) {
+  console.error('Failed to load Compromise NLP:', e.message);
+  // Fallback to simple pattern matching
+  nlp = {
+    process: (text) => {
+      return {
+        match: (pattern) => {
+          const regex = new RegExp(pattern, 'i');
+          return regex.test(text);
+        },
+        has: (word) => text.toLowerCase().includes(word.toLowerCase())
+      };
+    }
+  };
+}
+
 // ----------------- MEMORY -----------------
 let memory = []
 try {
@@ -61,40 +84,107 @@ function saveIgnored() {
   }
 }
 
-// ----------------- ARLI AI SETUP -----------------
-async function arliChat(prompt, options = {}) {
-  try {
-    // Validate API key exists
-    if (!process.env.ARLI_API_KEY) {
-      console.error('ARLI_API_KEY not found in environment variables')
-      return "My AI brain isn't configured properly."
-    }
-
-    const response = await fetch("https://arli.p.rapidapi.com/chat", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "X-RapidAPI-Key": process.env.ARLI_API_KEY,
-        "X-RapidAPI-Host": "arli.p.rapidapi.com"
-      },
-      body: JSON.stringify({
-        query: prompt,
-        conversation: memory.slice(-20).map(msg => ({ role: msg.role, content: msg.content })), // Limit conversation history
-        stream: false
-      })
-    })
-
-    if (!response.ok) {
-      console.error(`Arli API HTTP error: ${response.status} ${response.statusText}`)
-      return "I'm having trouble thinking right now."
-    }
-
-    const data = await response.json()
-    return data?.result?.response || "I'm having trouble thinking right now."
-  } catch (error) {
-    console.error('Arli API error:', error.message)
-    return "I'm having trouble thinking right now. Please try again later."
+// ----------------- WHISPER FUNCTION -----------------
+function whisper(player, message) {
+  if (bot.players[player]) {
+    bot.chat(`/msg ${player} ${message}`);
+  } else {
+    // Fallback to regular chat if player not found
+    bot.chat(message);
   }
+}
+
+// ----------------- LOCAL NLP PROCESSING -----------------
+function parseInstructionsNLP(username, message) {
+  const doc = nlp(message.toLowerCase());
+  const steps = [];
+  
+  // Follow commands
+  if (doc.has('follow') || doc.has('come') || doc.has('with me')) {
+    const target = extractPlayerName(doc, username);
+    steps.push({ action: "follow", player: target });
+  }
+  
+  // Goto coordinates
+  const coordMatch = message.match(/(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)/);
+  if ((doc.has('go to') || doc.has('goto') || doc.has('move to')) && coordMatch) {
+    steps.push({ 
+      action: "goto", 
+      x: parseInt(coordMatch[1]), 
+      y: parseInt(coordMatch[2]), 
+      z: parseInt(coordMatch[3]) 
+    });
+  }
+  
+  // Teleport requests
+  if ((doc.has('teleport') || doc.has('tp') || doc.match('tpa')) && !doc.has('request')) {
+    const target = extractPlayerName(doc, username);
+    steps.push({ action: "tpa", player: target });
+  }
+  
+  // Wait commands
+  const waitMatch = message.match(/(?:wait|pause|stop) (?:\w+ )?(\d+) (?:seconds|secs|sec)/i);
+  if (waitMatch) {
+    steps.push({ action: "wait", seconds: parseInt(waitMatch[1]) });
+  }
+  
+  return steps;
+}
+
+function extractPlayerName(doc, defaultName) {
+  // Look for player names in the text
+  const people = doc.people().out('array');
+  if (people.length > 0) {
+    return people[0];
+  }
+  
+  // Look for mentions of specific players
+  const words = doc.out('text').split(' ');
+  const playerIndex = words.findIndex(word => 
+    ['follow', 'goto', 'teleport', 'tp', 'tpa', 'to'].includes(word.toLowerCase()));
+  
+  if (playerIndex !== -1 && playerIndex + 1 < words.length) {
+    return words[playerIndex + 1].replace(/[^a-zA-Z0-9_]/g, '');
+  }
+  
+  return defaultName;
+}
+
+function generateResponse(message, username, isTrusted) {
+  const doc = nlp(message.toLowerCase());
+  
+  // Greetings
+  if (doc.has('hello') || doc.has('hi') || doc.has('hey')) {
+    return `Hello ${username}! How can I help you?`;
+  }
+  
+  // Thanks
+  if (doc.has('thank') || doc.has('thanks')) {
+    return "You're welcome!";
+  }
+  
+  // Questions about status
+  if (doc.has('how are you') || doc.has('how do you feel')) {
+    return "I'm functioning properly and ready to help!";
+  }
+  
+  // Location questions
+  if (doc.has('where are you')) {
+    const pos = bot.entity.position;
+    return `I'm at ${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}`;
+  }
+  
+  // Trust management responses
+  if (doc.has('trust') && isTrusted) {
+    return "I've updated the trusted players list.";
+  }
+  
+  // Default response for unknown queries
+  if (isTrusted) {
+    return "I heard you, but I'm not sure what you want me to do. Try 'follow me', 'goto x y z', or 'tpa player'.";
+  }
+  
+  return "I'm here! Let me know if you need anything.";
 }
 
 // ----------------- BOT INIT -----------------
@@ -165,72 +255,6 @@ async function ensurePathfinderLoaded() {
   }
 }
 
-// ----------------- INSTRUCTION PARSER -----------------
-async function parseInstructionsLLM(username, message) {
-  const basePrompt = (msg, strict = false) => `
-You are a planner for a Minecraft bot named TryChlorophyll/Phyll.
-Given an instruction, output a JSON plan of steps.
-
-Valid actions:
-- {"action":"follow","player":"<player>"}
-- {"action":"goto","x":<int>,"y":<int>,"z":<int>}
-- {"action":"tpa","player":"<player>"}
-- {"action":"wait","seconds":<int>}
-
-Rules:
-- Output ONLY valid JSON, no extra text.
-- Always wrap output in {"steps":[ ... ]}
-- Use integers for numbers.
-- If the player to follow/teleport isn't specified, use "${username}".
-- If nothing actionable, return {"steps": []}.
-${strict ? "STRICT: Do not include any explanations, only JSON." : ""}
-
-Instruction: "${msg}"
-JSON:`.trim()
-
-  async function askArli(prompt) {
-    try {
-      const response = await arliChat(prompt, { temperature: 0.3 })
-      if (!response || response.includes("trouble thinking")) {
-        return null
-      }
-      
-      const jsonMatch = response.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) return null
-      
-      const parsed = JSON.parse(jsonMatch[0])
-      return parsed
-    } catch (e) {
-      console.error('JSON parsing error:', e.message)
-      return null
-    }
-  }
-
-  try {
-    // First attempt
-    let parsed = await askArli(basePrompt(message))
-    if (parsed && Array.isArray(parsed.steps)) {
-      console.log('Parsed instructions:', parsed.steps)
-      return parsed.steps
-    }
-
-    // Retry with stricter instructions
-    console.warn("Retrying instruction parsing with stricter prompt...")
-    parsed = await askArli(basePrompt(message, true))
-    if (parsed && Array.isArray(parsed.steps)) {
-      console.log('Parsed instructions (retry):', parsed.steps)
-      return parsed.steps
-    }
-
-    // Final fallback
-    console.error("Failed to parse valid JSON after retries.")
-    return []
-  } catch (e) {
-    console.error("Instruction parsing error:", e.message)
-    return []
-  }
-}
-
 // ----------------- EXECUTE STEPS -----------------
 async function executeSteps(username, steps) {
   console.log(`Executing ${steps.length} steps for ${username}`)
@@ -245,7 +269,7 @@ async function executeSteps(username, steps) {
           await ensurePathfinderLoaded()
           const target = bot.players[step.player]?.entity
           if (!target) {
-            bot.chat(`I can't see ${step.player} right now.`)
+            whisper(username, `I can't see ${step.player} right now.`)
             continue
           }
           
@@ -254,13 +278,13 @@ async function executeSteps(username, steps) {
           
           const goal = new goals.GoalFollow(target, 1)
           bot.pathfinder.setGoal(goal, true)
-          bot.chat(`Following ${step.player}!`)
+          whisper(username, `Following ${step.player}!`)
 
           // Cancel follow after 60s
           setTimeout(() => {
             if (bot.pathfinder.goal instanceof goals.GoalFollow) {
               bot.pathfinder.setGoal(null)
-              bot.chat(`Stopped following ${step.player}.`)
+              whisper(username, `Stopped following ${step.player}.`)
             }
           }, 60000)
           break
@@ -272,12 +296,12 @@ async function executeSteps(username, steps) {
           
           // Validate coordinates
           if (typeof x !== "number" || typeof y !== "number" || typeof z !== "number") {
-            bot.chat("Those coordinates don't look right.")
+            whisper(username, "Those coordinates don't look right.")
             continue
           }
           
           if (Math.abs(x) > 30000000 || Math.abs(z) > 30000000 || y < -64 || y > 320) {
-            bot.chat("Those coordinates are too far or invalid.")
+            whisper(username, "Those coordinates are too far or invalid.")
             continue
           }
           
@@ -286,31 +310,31 @@ async function executeSteps(username, steps) {
           
           const goal = new goals.GoalBlock(x, y, z)
           bot.pathfinder.setGoal(goal)
-          bot.chat(`Going to ${x}, ${y}, ${z}!`)
+          whisper(username, `Going to ${x}, ${y}, ${z}!`)
           break
         }
 
         case "tpa": {
           if (!step.player) {
-            bot.chat("I need to know who to teleport to.")
+            whisper(username, "I need to know who to teleport to.")
             continue
           }
           bot.chat(`/tpa ${step.player}`)
-          bot.chat(`Sent teleport request to ${step.player}!`)
+          whisper(username, `Sent teleport request to ${step.player}!`)
           break
         }
 
         case "wait": {
           const seconds = Math.max(1, Math.min(30, parseInt(step.seconds, 10) || 1)) // Cap at 30 seconds
-          bot.chat(`Waiting ${seconds} seconds...`)
+          whisper(username, `Waiting ${seconds} seconds...`)
           await new Promise(resolve => setTimeout(resolve, seconds * 1000))
-          bot.chat(`Done waiting!`)
+          whisper(username, `Done waiting!`)
           break
         }
 
         default:
           console.warn("Unknown action:", step.action)
-          bot.chat(`I don't know how to do: ${step.action}`)
+          whisper(username, `I don't know how to do: ${step.action}`)
       }
       
       // Small delay between steps to prevent spam
@@ -320,7 +344,7 @@ async function executeSteps(username, steps) {
       
     } catch (err) {
       console.error("Error executing step:", step, err.message)
-      bot.chat(`Something went wrong with: ${step.action}`)
+      whisper(username, `Something went wrong with: ${step.action}`)
     }
   }
 }
@@ -367,10 +391,10 @@ bot.on('chat', async (username, message) => {
       if (!trustedPlayers.includes(target)) {
         trustedPlayers.push(target)
         saveTrusted()
-        bot.chat(`${target} is now trusted!`)
+        whisper(username, `${target} is now trusted!`)
         return
       } else {
-        bot.chat(`${target} is already trusted.`)
+        whisper(username, `${target} is already trusted.`)
         return
       }
     }
@@ -381,9 +405,9 @@ bot.on('chat', async (username, message) => {
       trustedPlayers = trustedPlayers.filter(p => p !== target)
       saveTrusted()
       if (wasRemoved) {
-        bot.chat(`${target} is no longer trusted.`)
+        whisper(username, `${target} is no longer trusted.`)
       } else {
-        bot.chat(`${target} wasn't trusted anyway.`)
+        whisper(username, `${target} wasn't trusted anyway.`)
       }
       return
     }
@@ -393,10 +417,10 @@ bot.on('chat', async (username, message) => {
       if (!ignoredPlayers.includes(target)) {
         ignoredPlayers.push(target)
         saveIgnored()
-        bot.chat(`${target} is now ignored.`)
+        whisper(username, `${target} is now ignored.`)
         return
       } else {
-        bot.chat(`${target} is already ignored.`)
+        whisper(username, `${target} is already ignored.`)
         return
       }
     }
@@ -407,9 +431,9 @@ bot.on('chat', async (username, message) => {
       ignoredPlayers = ignoredPlayers.filter(p => p !== target)
       saveIgnored()
       if (wasRemoved) {
-        bot.chat(`${target} is no longer ignored.`)
+        whisper(username, `${target} is no longer ignored.`)
       } else {
-        bot.chat(`${target} wasn't ignored anyway.`)
+        whisper(username, `${target} wasn't ignored anyway.`)
       }
       return
     }
@@ -424,7 +448,7 @@ bot.on('chat', async (username, message) => {
   // Handle trusted player instructions
   if (isTrusted) {
     try {
-      const steps = await parseInstructionsLLM(username, message)
+      const steps = parseInstructionsNLP(username, message)
       if (steps && steps.length > 0) {
         console.log(`Executing ${steps.length} instruction steps`)
         await executeSteps(username, steps)
@@ -434,38 +458,26 @@ bot.on('chat', async (username, message) => {
       }
     } catch (e) { 
       console.error('Instruction execution error:', e.message) 
-      bot.chat("Something went wrong executing that command.")
+      whisper(username, "Something went wrong executing that command.")
       return
     }
   }
 
   // Block untrusted players from using action commands
   if (!isTrusted && /\b(follow|goto|come|hold|drop|tp|tpa|wait|mine|build|attack)\b/i.test(msgLower)) {
-    bot.chat(`Sorry, only trusted players can give me commands. Ask ${ownerName}!`)
+    whisper(username, `Sorry, only trusted players can give me commands. Ask ${ownerName}!`)
     return
   }
 
-  // Generate conversational response
-  const convoPrompt = `You are Phyll, a helpful Minecraft bot assistant.
-Owner: ${ownerName}. Currently trusted: ${trustedPlayers.join(', ')}.
-You are loyal to your owner and helpful to trusted players.
-Respond briefly and naturally (1-2 sentences max) to: "${message}"
-Be friendly but don't be overly chatty. If someone is rude, snap back.`
-
+  // Generate response using local NLP
   try {
-    const reply = await arliChat(convoPrompt)
-    if (reply && !reply.includes("trouble thinking")) {
-      // Ensure response isn't too long for Minecraft chat
-      const truncatedReply = reply.length > 100 ? reply.substring(0, 97) + "..." : reply
-      bot.chat(truncatedReply)
-      memory.push({ role: 'assistant', content: truncatedReply })
-      saveMemory()
-    } else {
-      bot.chat("*thinking...*")
-    }
+    const reply = generateResponse(message, username, isTrusted)
+    whisper(username, reply)
+    memory.push({ role: 'assistant', content: reply })
+    saveMemory()
   } catch (e) {
-    console.error('Conversation error:', e.message)
-    bot.chat("My brain is a bit fuzzy right now.")
+    console.error('Response generation error:', e.message)
+    whisper(username, "I'm having trouble understanding that.")
   }
 })
 
@@ -477,17 +489,17 @@ bot.on('chat', async (username, message) => {
   
   if (msgLower.includes('status') && botNames.some(n => msgLower.includes(n.toLowerCase()))) {
     const pos = bot.entity.position
-    bot.chat(`Health: ${bot.health?.toFixed(1)}/20, Food: ${bot.food}/20, Position: ${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}`)
+    whisper(username, `Health: ${bot.health?.toFixed(1)}/20, Food: ${bot.food}/20, Position: ${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}`)
   }
   
   if (msgLower.includes('trusted list') && botNames.some(n => msgLower.includes(n.toLowerCase()))) {
-    bot.chat(`Trusted players: ${trustedPlayers.join(', ')}`)
+    whisper(username, `Trusted players: ${trustedPlayers.join(', ')}`)
   }
   
   if (msgLower.includes('stop') && botNames.some(n => msgLower.includes(n.toLowerCase()))) {
     if (pathfinderLoaded && bot.pathfinder) {
       bot.pathfinder.setGoal(null)
-      bot.chat("Stopped all movement.")
+      whisper(username, "Stopped all movement.")
     }
   }
 })

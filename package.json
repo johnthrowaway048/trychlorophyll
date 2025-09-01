@@ -1,19 +1,19 @@
 {
   "name": "minecraft-bot",
-  "version": "1.0.0",
-  "description": "Minecraft bot with AI for instructions and personality",
+  "version": "2.0.0",
+  "description": "Minecraft bot with local NLP for instructions and personality",
   "type": "module",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
+    "compromise": "*",
     "dotenv": "*",
-    "fs-extra": "*",
     "minecraft-data": "*",
     "mineflayer": "*",
     "mineflayer-auto-auth": "*",
     "mineflayer-auto-eat": "*",
-    "node-fetch": "*"
+    "mineflayer-pathfinder": "*"
   }
 }
