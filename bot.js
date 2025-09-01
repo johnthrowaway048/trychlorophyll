@@ -249,8 +249,18 @@ function sleep(ms) { return new Promise(res => setTimeout(res, ms)) }
 
 // ----------------- CHAT HANDLER -----------------
 bot.on('chat', async (username, message) => {
-  if (username === bot.username) return; // ignore bot itself
+  if (!username) {
+    const match = message.match(/^<?(\w+)>?\s*(.*)/); // attempt to parse <username> Message
+    if (match) {
+      username = match[1];
+      message = match[2];
+    } else {
+      username = 'Unknown';
+    }
+  }
 
+  if (username === bot.username) return; // ignore bot itself
+  
   console.log(`[CHAT] ${username}: ${message}`);
 
   const msgLower = message.toLowerCase();
