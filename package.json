@@ -8,13 +8,14 @@
     "start": "node bot.js"
   },
   "dependencies": {
-    "compromise": "*",
-    "dotenv": "*",
     "express": "*",
-    "minecraft-data": "*",
+    "dotenv": "*",
     "mineflayer": "*",
-    "mineflayer-auto-auth": "*",
     "mineflayer-auto-eat": "*",
-    "mineflayer-pathfinder": "*"
+    "mineflayer-auto-auth": "*",
+    "mineflayer-pathfinder": "*",
+    "minecraft-data": "*",
+    "compromise": "*",
+    "prismarine-viewer": "*"
   }
 }
