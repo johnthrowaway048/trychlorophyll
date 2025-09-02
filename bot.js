@@ -100,14 +100,14 @@ function parseInstructionsNLP(username, message) {
   const steps = [];
   
   // Follow commands
-  if (doc.has('follow') || doc.has('come') || doc.has('with me')) {
-    const target = extractPlayerName(doc, username);
+  if (doc.has('follow') || doc.has('come') || (doc.has('come') && doc.has('with'))) {
+    const target = extractPlayerName(message, username, ['follow', 'come']);
     steps.push({ action: "follow", player: target });
   }
   
-  // Goto coordinates
-  const coordMatch = message.match(/(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)/);
-  if ((doc.has('go to') || doc.has('goto') || doc.has('move to')) && coordMatch) {
+  // Goto coordinates - be more specific about coordinate patterns
+  const coordMatch = message.match(/(?:go to|goto|move to)\s+(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)/i);
+  if (coordMatch) {
     steps.push({ 
       action: "goto", 
       x: parseInt(coordMatch[1]), 
@@ -116,10 +116,12 @@ function parseInstructionsNLP(username, message) {
     });
   }
   
-  // Teleport requests
-  if ((doc.has('teleport') || doc.has('tp') || doc.match('tpa')) && !doc.has('request')) {
-    const target = extractPlayerName(doc, username);
-    steps.push({ action: "tpa", player: target });
+  // Teleport requests - be more specific to avoid false matches
+  if ((doc.has('teleport') || message.toLowerCase().includes('/tpa') || message.toLowerCase().includes('tp to')) && !doc.has('request')) {
+    const target = extractPlayerName(message, username, ['teleport', 'tp', 'tpa']);
+    if (target !== username) { // Don't tp to self
+      steps.push({ action: "tpa", player: target });
+    }
   }
   
   // Wait commands
@@ -131,20 +133,24 @@ function parseInstructionsNLP(username, message) {
   return steps;
 }
 
-function extractPlayerName(doc, defaultName) {
-  // Look for player names in the text
-  const people = doc.people().out('array');
-  if (people.length > 0) {
-    return people[0];
+function extractPlayerName(message, defaultName, commandWords = []) {
+  const words = message.toLowerCase().split(/\s+/);
+  
+  // Look for player names after command words
+  for (const cmdWord of commandWords) {
+    const cmdIndex = words.findIndex(word => word.includes(cmdWord.toLowerCase()));
+    if (cmdIndex !== -1 && cmdIndex + 1 < words.length) {
+      const nextWord = words[cmdIndex + 1].replace(/[^a-zA-Z0-9_]/g, '');
+      // Don't return empty strings or common words
+      if (nextWord && nextWord.length > 0 && !['me', 'to', 'at', 'the'].includes(nextWord)) {
+        return nextWord;
+      }
+    }
   }
   
-  // Look for mentions of specific players
-  const words = doc.out('text').split(' ');
-  const playerIndex = words.findIndex(word => 
-    ['follow', 'goto', 'teleport', 'tp', 'tpa', 'to'].includes(word.toLowerCase()));
-  
-  if (playerIndex !== -1 && playerIndex + 1 < words.length) {
-    return words[playerIndex + 1].replace(/[^a-zA-Z0-9_]/g, '');
+  // Look for "me" patterns
+  if (message.toLowerCase().includes('follow me') || message.toLowerCase().includes('come to me')) {
+    return defaultName;
   }
   
   return defaultName;
@@ -450,7 +456,7 @@ bot.on('chat', async (username, message) => {
     try {
       const steps = parseInstructionsNLP(username, message)
       if (steps && steps.length > 0) {
-        console.log(`Executing ${steps.length} instruction steps`)
+        console.log(`Executing ${steps.length} instruction steps:`, steps)
         await executeSteps(username, steps)
         memory.push({ role: 'assistant', content: `[Executed ${steps.length} instructions for ${username}]` })
         saveMemory()
@@ -481,7 +487,7 @@ bot.on('chat', async (username, message) => {
   }
 })
 
-// Add some helpful status commands
+// Add some helpful status commands - FIXED: Separate event handler
 bot.on('chat', async (username, message) => {
   if (username !== ownerName) return
   
