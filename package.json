@@ -17,5 +17,6 @@
     "minecraft-data": "*",
     "compromise": "*",
     "prismarine-viewer": "*"
+	"http-proxy-middleware": "*"
   }
 }

@@ -9,13 +9,14 @@ import express from 'express'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import http from 'http'
+import { createProxyMiddleware } from 'http-proxy-middleware'
 
 config()
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Logging to console and file
+// Logging to console and file (ASCII only)
 const LOG_PATH = process.env.BOT_LOG_FILE || '/tmp/bot-debug.log'
 const logStream = fs.createWriteStream(LOG_PATH, { flags: 'a' })
 function safeWriteLog(prefix, args) {
@@ -28,19 +29,26 @@ function safeWriteLog(prefix, args) {
     process.stdout.write(line)
     logStream.write(line)
   } catch (e) {
-    // no-op
+    // ignore logging errors
   }
 }
 console.log = (...args) => safeWriteLog('[INFO]', args)
 console.warn = (...args) => safeWriteLog('[WARN]', args)
 console.error = (...args) => safeWriteLog('[ERROR]', args)
 
-// Express app
+// Express app and public port (Render provides PORT env var)
 const app = express()
 const PORT = parseInt(process.env.PORT || '3000', 10)
 
+// Viewer proxy configuration (single authoritative place)
+const VIEWER_PORT_INTERNAL = parseInt(process.env.VIEWER_PORT || '3001', 10)
+const VIEWER_HOST_INTERNAL = process.env.VIEWER_HOST || '127.0.0.1'
+const VIEWER_TARGET = `http://${VIEWER_HOST_INTERNAL}:${VIEWER_PORT_INTERNAL}`
+
+// Mounted bot variable
 let bot = null
 
+// Basic endpoints
 app.get('/', (req, res) => {
   res.json({
     status: bot ? 'online' : 'not initialized',
@@ -64,7 +72,7 @@ app.get('/health', (req, res) => {
   })
 })
 
-// Settings and storage
+// Settings and storage paths
 const ownerName = process.env.OWNER_NAME || 'TryChloroform'
 const botNames = process.env.BOT_NAMES ? process.env.BOT_NAMES.split(',') : ['trychlorophyll', 'phyll']
 let trustedPlayers = [ownerName]
@@ -175,19 +183,58 @@ function whisper(player, message) {
   }
 }
 
-// Parse plugin and vanilla message lines
+// Improved parser for raw plugin/chat lines
 function tryExtractUserFromRaw(raw) {
   if (!raw) return null
-  const r = String(raw)
-  // Format: <user> message
-  let m = r.match(/^<(\w+)>[ ](.+)/)
+  const r = String(raw).trim()
+
+  // Case 1: vanilla format <user> message
+  let m = r.match(/^<(\w+)>[ ](.+)$/)
   if (m) return { username: m[1], message: m[2] }
-  // Format: [Discord] user: message
-  m = r.match(/^\[Discord\][ ](.+?):[ ](.+)/i)
+
+  // Case 2: Discord style with pipe and » (seen in your logs)
+  // Example: [Discord] | TryChloroform » Geebleeeee what msg plugin are u using
+  m = r.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
   if (m) return { username: m[1], message: m[2] }
-  // Format: user: message
-  m = r.match(/^(\w+):[ ](.+)/)
+
+  // Case 3: simpler Discord format "[Discord] user: message"
+  m = r.match(/^\[Discord\][ ]*(.+?):[ ](.+)$/i)
   if (m) return { username: m[1], message: m[2] }
+
+  // Case 4: "user: message"
+  m = r.match(/^(\w+):[ ](.+)$/)
+  if (m) return { username: m[1], message: m[2] }
+
+  // Case 5: try parse JSON text object common in modern servers/plugins
+  try {
+    const obj = JSON.parse(r)
+    if (obj && typeof obj === 'object') {
+      const textParts = []
+      if (Array.isArray(obj.extra)) {
+        for (const e of obj.extra) {
+          if (typeof e === 'string') textParts.push(e)
+          else if (e && typeof e.text === 'string') textParts.push(e.text)
+        }
+      }
+      if (obj.with && Array.isArray(obj.with)) {
+        for (const w of obj.with) {
+          if (typeof w === 'string') textParts.push(w)
+          else if (w && typeof w.text === 'string') textParts.push(w.text)
+        }
+      }
+      const joined = textParts.join(' ').trim()
+      m = joined.match(/^<(\w+)>[ ](.+)$/)
+      if (m) return { username: m[1], message: m[2] }
+      m = joined.match(/^(\w+):[ ](.+)$/)
+      if (m) return { username: m[1], message: m[2] }
+      m = joined.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
+      if (m) return { username: m[1], message: m[2] }
+    }
+  } catch (e) {
+    // not JSON, fall through
+  }
+
+  // No username found
   return null
 }
 
@@ -318,7 +365,7 @@ async function executeSteps(username, steps) {
   }
 }
 
-// Main chat handler via message event only
+// Main chat handler via message parsing
 async function handleChat(username, message) {
   if (!bot) return
   if (!username || username === bot.username) return
@@ -394,7 +441,7 @@ async function handleChat(username, message) {
   }
 }
 
-// Setup event handlers for a created bot instance
+// Setup event handlers for bot instance
 function setupBotEventHandlers() {
   bot.on('error', (err) => {
     console.error('[BOT] Error', err && err.message)
@@ -416,19 +463,17 @@ function setupBotEventHandlers() {
     try { bot.loadPlugin(autoEat); console.log('[SPAWN] AutoEat loaded') } catch (e) { console.error('[SPAWN] AutoEat failed', e.message) }
     try { bot.loadPlugin(AutoAuth); console.log('[SPAWN] AutoAuth loaded') } catch (e) { console.error('[SPAWN] AutoAuth failed', e.message) }
 
-    // Start prismarine viewer on internal port and proxy via Express
-    const viewerPort = parseInt(process.env.VIEWER_PORT || '3001', 10)
-    const viewerHost = process.env.VIEWER_HOST || '127.0.0.1'
+    // Start prismarine viewer on internal port (use same VIEWER_* constants)
     try {
       const { mineflayer: startViewer } = await import('prismarine-viewer')
-      startViewer(bot, { port: viewerPort, firstPerson: (process.env.VIEWER_FIRST_PERSON === 'true') })
-      console.log('[VIEWER] Prismarine viewer started on ' + viewerHost + ':' + viewerPort + ' proxy path /viewer')
+      startViewer(bot, { port: VIEWER_PORT_INTERNAL, firstPerson: (process.env.VIEWER_FIRST_PERSON === 'true') })
+      console.log('[VIEWER] Prismarine viewer started on ' + VIEWER_HOST_INTERNAL + ':' + VIEWER_PORT_INTERNAL)
     } catch (e) {
-      console.error('[VIEWER] start failed', e.message)
+      console.error('[VIEWER] start failed', e && e.message)
     }
   })
 
-  // Use message event as primary chat input because many plugins and bridges deliver there
+  // Use message event for plugin-forwarded lines and vanilla chat fallback
   bot.on('message', (jsonMsg) => {
     const raw = jsonMsg.toString()
     console.log('[MESSAGE-RAW] ' + raw)
@@ -445,7 +490,7 @@ function setupBotEventHandlers() {
       if (parsed.username === bot.username) return
       handleChat(parsed.username, parsed.message)
     } else {
-      // Fallback attempt: some servers put username in json structure, attempt to inspect
+      // Fallback: try JSON extraction inside message object
       try {
         const obj = JSON.parse(raw)
         if (obj && obj.extra && Array.isArray(obj.extra) && obj.extra.length > 0) {
@@ -453,36 +498,32 @@ function setupBotEventHandlers() {
           const alt = tryExtractUserFromRaw(text)
           if (alt) { handleChat(alt.username, alt.message); return }
         }
-      } catch (e) {
-        // Not JSON, ignore
-      }
-      console.log('[MESSAGE-RAW] Could not extract username from raw line. Please paste this line to help adjust regex: ' + raw)
+      } catch (e) { /* not JSON */ }
+      console.log('[MESSAGE-RAW] Could not extract username from raw line. Please paste this raw line to help adjust regex: ' + raw)
     }
   })
 }
 
-// Proxy viewer through Express so only PORT needs to be open
-const VIEWER_PORT_INTERNAL = parseInt(process.env.VIEWER_PORT || '3001', 10)
-const VIEWER_HOST_INTERNAL = process.env.VIEWER_HOST || '127.0.0.1'
-app.use('/viewer', (req, res) => {
-  const targetPath = req.originalUrl.replace(/^\/viewer/, '') || '/'
-  const options = {
-    hostname: VIEWER_HOST_INTERNAL,
-    port: VIEWER_PORT_INTERNAL,
-    path: targetPath,
-    method: req.method,
-    headers: req.headers
-  }
-  const proxyReq = http.request(options, (proxyRes) => {
-    res.writeHead(proxyRes.statusCode || 502, proxyRes.headers)
-    proxyRes.pipe(res, { end: true })
+// Mount proxy for viewer with websocket support
+app.use(
+  '/viewer',
+  createProxyMiddleware({
+    target: VIEWER_TARGET,
+    changeOrigin: true,
+    ws: true,
+    pathRewrite: { '^/viewer': '/' },
+    logLevel: 'warn'
   })
-  proxyReq.on('error', (err) => {
-    console.error('[PROXY] viewer proxy error', err.message)
-    res.statusCode = 502
-    res.end('viewer proxy error')
-  })
-  req.pipe(proxyReq, { end: true })
+)
+
+// Start server (http server so upgrade events are handled) and initialize bot after listening
+const server = http.createServer(app)
+server.on('upgrade', (req, socket, head) => {
+  // http-proxy-middleware handles upgrades automatically; keep handler to avoid dropped upgrades
+})
+server.listen(PORT, '0.0.0.0', () => {
+  console.log('[WEB] Express listening on 0.0.0.0:' + PORT + ' proxy viewer at /viewer')
+  initializeBot().catch(e => console.error('[START] initializeBot threw', e && e.message))
 })
 
 // Initialize bot with retries
@@ -526,9 +567,3 @@ async function initializeBot() {
 // Periodic saves and heartbeat
 setInterval(() => { saveMemory(); saveTrusted(); saveIgnored() }, 10 * 60 * 1000)
 setInterval(() => console.log('[HEARTBEAT] status ' + (bot ? (bot.entity ? 'connected' : 'disconnected') : 'not initialized')), 5 * 60 * 1000)
-
-// Start express and bot
-app.listen(PORT, '0.0.0.0', () => {
-  console.log('[WEB] Express listening on 0.0.0.0:' + PORT + ' proxy viewer at /viewer')
-  initializeBot().catch(e => console.error('[START] initializeBot threw', e.message))
-})
