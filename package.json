@@ -16,7 +16,7 @@
     "mineflayer-pathfinder": "*",
     "minecraft-data": "*",
     "compromise": "*",
-    "prismarine-viewer": "*"
+    "prismarine-viewer": "*",
 	"http-proxy-middleware": "*"
   }
 }
