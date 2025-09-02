@@ -1,7 +1,7 @@
 {
   "name": "minecraft-bot",
   "version": "2.0.0",
-  "description": "Minecraft bot with local NLP for instructions and personality",
+  "description": "Minecraft bot with local NLP for instructions, personality, and web status endpoints",
   "type": "module",
   "main": "bot.js",
   "scripts": {
@@ -10,6 +10,7 @@
   "dependencies": {
     "compromise": "*",
     "dotenv": "*",
+    "express": "*",
     "minecraft-data": "*",
     "mineflayer": "*",
     "mineflayer-auto-auth": "*",
