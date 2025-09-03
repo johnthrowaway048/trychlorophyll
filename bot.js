@@ -1,8 +1,10 @@
-require('dotenv').config();
-const mineflayer = require('mineflayer');
-const autoeat = require('mineflayer-auto-eat');
-const autoauth = require('mineflayer-auto-auth');
-const prismarineViewer = require('prismarine-viewer').mineflayer;
+import dotenv from 'dotenv';
+dotenv.config();
+
+import mineflayer from 'mineflayer';
+import { loader as autoeat} from 'mineflayer-auto-eat';
+import autoauth from 'mineflayer-auto-auth';
+import { mineflayer as prismarineViewer } from 'prismarine-viewer';
 
 const bot = mineflayer.createBot({
   host: process.env.MINECRAFT_HOST,
