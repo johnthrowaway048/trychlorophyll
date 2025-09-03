@@ -1,6 +1,6 @@
 {
   "name": "minecraft-bot",
-  "version": "2.0.0",
+  "version": "0.0.0",
   "description": "Minecraft bot with local NLP for instructions, personality, and web status endpoints",
   "type": "module",
   "main": "bot.js",
@@ -8,16 +8,10 @@
     "start": "node bot.js"
   },
   "dependencies": {
-    "express": "*",
     "dotenv": "*",
     "mineflayer": "*",
     "mineflayer-auto-eat": "*",
     "mineflayer-auto-auth": "*",
-    "mineflayer-pathfinder": "*",
-    "minecraft-data": "*",
-    "compromise": "*",
     "prismarine-viewer": "*",
-	"http-proxy-middleware": "*",
-	"net": "*"
   }
 }
