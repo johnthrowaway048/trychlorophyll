@@ -82,9 +82,9 @@ async function cerebrasChat(prompt, options = {}) {
         "Authorization": `Bearer ${process.env.CEREBRAS_API_KEY}`
       },
       body: JSON.stringify({
-        model: options.model || "llama3.1-8b",
+        model: options.model || "llama3.3-70b",
         messages: messages,
-        max_tokens: options.max_tokens || 150,
+        max_tokens: options.max_tokens || 250,
         temperature: options.temperature || 0.7,
         stream: false
       })
@@ -125,14 +125,29 @@ let pathfinderPkg, Movements, goals
 // Add error handling for bot connection
 bot.on('error', (err) => {
   console.error('Bot error:', err.message)
+  botStatus.status = 'error'
+  botStatus.lastActivity = Date.now()
 })
 
 bot.on('kicked', (reason) => {
   console.log('Bot was kicked:', reason)
+  botStatus.status = 'kicked'
+  botStatus.lastActivity = Date.now()
 })
 
 bot.on('end', () => {
   console.log('Bot disconnected')
+  botStatus.status = 'disconnected'
+  botStatus.lastActivity = Date.now()
+})
+
+// Update activity on any chat
+bot.on('chat', () => {
+  botStatus.lastActivity = Date.now()
+})
+
+bot.on('whisper', () => {
+  botStatus.lastActivity = Date.now()
 })
 
 bot.once('spawn', async () => {
@@ -520,7 +535,7 @@ bot.on('whisper', async (username, message) => {
 
   // Block untrusted players from using action commands
   if (!isTrusted && /\b(follow|goto|come|hold|drop|tp|tpa|wait|mine|build|attack)\b/i.test(msgLower)) {
-    bot.whisper(username, `Sorry, only trusted players can give me commands. Ask ${ownerName}!`)
+    await sendWhisperMessage(username, `Sorry, only trusted players can give me commands. Ask ${ownerName}!`)
     return
   }
 
