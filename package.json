@@ -12,6 +12,7 @@
     "prismarine-viewer": "*",
     "mineflayer-auto-auth": "*",
     "mineflayer-auto-eat": "*",
-    "dotenv": "*"
+    "dotenv": "*",
+	"canvas": "*"
   }
 }
