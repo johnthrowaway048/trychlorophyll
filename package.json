@@ -8,13 +8,13 @@
     "start": "node bot.js"
   },
   "dependencies": {
-    "dotenv": "^16.3.1",
-    "fs-extra": "^11.1.1",
-    "minecraft-data": "^3.55.0",
-    "mineflayer": "^4.17.0",
-    "mineflayer-auto-auth": "^2.3.1",
-    "mineflayer-auto-eat": "^3.3.0",
-    "mineflayer-pathfinder": "^2.4.3",
-    "node-fetch": "^3.3.2"
+    "dotenv": "*",
+    "fs-extra": "*",
+    "minecraft-data": "*",
+    "mineflayer": "*",
+    "mineflayer-auto-auth": "*",
+    "mineflayer-auto-eat": "*",
+    "mineflayer-pathfinder": "*",
+    "node-fetch": "*"
   }
 }
