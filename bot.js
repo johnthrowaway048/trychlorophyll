@@ -12,11 +12,10 @@ import http from 'http'
 import { createProxyMiddleware } from 'http-proxy-middleware'
 
 config()
-
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Logging to console and file (ASCII only)
+// Logging to console and file
 const LOG_PATH = process.env.BOT_LOG_FILE || '/tmp/bot-debug.log'
 const logStream = fs.createWriteStream(LOG_PATH, { flags: 'a' })
 function safeWriteLog(prefix, args) {
@@ -36,16 +35,16 @@ console.log = (...args) => safeWriteLog('[INFO]', args)
 console.warn = (...args) => safeWriteLog('[WARN]', args)
 console.error = (...args) => safeWriteLog('[ERROR]', args)
 
-// Express app and public port (Render provides PORT env var)
+// Express app and port
 const app = express()
 const PORT = parseInt(process.env.PORT || '3000', 10)
 
-// Viewer proxy configuration (single authoritative place)
+// Viewer proxy constants
 const VIEWER_PORT_INTERNAL = parseInt(process.env.VIEWER_PORT || '3001', 10)
 const VIEWER_HOST_INTERNAL = process.env.VIEWER_HOST || '127.0.0.1'
 const VIEWER_TARGET = `http://${VIEWER_HOST_INTERNAL}:${VIEWER_PORT_INTERNAL}`
 
-// Mounted bot variable
+// Global bot variable (so web endpoints can access it)
 let bot = null
 
 // Basic endpoints
@@ -63,7 +62,6 @@ app.get('/', (req, res) => {
     } : null
   })
 })
-
 app.get('/health', (req, res) => {
   res.json({
     status: bot ? 'healthy' : 'not initialized',
@@ -72,7 +70,7 @@ app.get('/health', (req, res) => {
   })
 })
 
-// Settings and storage paths
+// Settings and storage
 const ownerName = process.env.OWNER_NAME || 'TryChloroform'
 const botNames = process.env.BOT_NAMES ? process.env.BOT_NAMES.split(',') : ['trychlorophyll', 'phyll']
 let trustedPlayers = [ownerName]
@@ -171,7 +169,7 @@ async function ensurePathfinderLoaded() {
   }
 }
 
-// Utility whisper
+// Whisper helper
 function whisper(player, message) {
   if (!bot) return
   console.log('[WHISPER] ->' + player + ' ' + message)
@@ -183,29 +181,35 @@ function whisper(player, message) {
   }
 }
 
-// Improved parser for raw plugin/chat lines
+// Improved raw message extraction
 function tryExtractUserFromRaw(raw) {
   if (!raw) return null
   const r = String(raw).trim()
 
-  // Case 1: vanilla format <user> message
+  // Case a: vanilla format <user> message
   let m = r.match(/^<(\w+)>[ ](.+)$/)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case 2: Discord style with pipe and » (seen in your logs)
-  // Example: [Discord] | TryChloroform » Geebleeeee what msg plugin are u using
+  // Case b: Discord style with pipe and » your logs showed:
+  // Example: [Discord] | TryChloroform » Geebleeeee what msg plugin...
   m = r.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case 3: simpler Discord format "[Discord] user: message"
+  // Case c: simpler Discord format "[Discord] user: message"
   m = r.match(/^\[Discord\][ ]*(.+?):[ ](.+)$/i)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case 4: "user: message"
+  // Case d: "user: message"
   m = r.match(/^(\w+):[ ](.+)$/)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case 5: try parse JSON text object common in modern servers/plugins
+  // Case e: join/leave lines like "name has joined the server!"
+  m = r.match(/^(.+?) has joined the server!?$/i)
+  if (m) return { username: m[1], message: `${m[1]} has joined` }
+  m = r.match(/^(.+?) has left the server!?$/i)
+  if (m) return { username: m[1], message: `${m[1]} left` }
+
+  // Case f: JSON text object common in newer servers/plugins
   try {
     const obj = JSON.parse(r)
     if (obj && typeof obj === 'object') {
@@ -223,22 +227,41 @@ function tryExtractUserFromRaw(raw) {
         }
       }
       const joined = textParts.join(' ').trim()
-      m = joined.match(/^<(\w+)>[ ](.+)$/)
-      if (m) return { username: m[1], message: m[2] }
-      m = joined.match(/^(\w+):[ ](.+)$/)
-      if (m) return { username: m[1], message: m[2] }
-      m = joined.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
-      if (m) return { username: m[1], message: m[2] }
+      let mm = joined.match(/^<(\w+)>[ ](.+)$/)
+      if (mm) return { username: mm[1], message: mm[2] }
+      mm = joined.match(/^(\w+):[ ](.+)$/)
+      if (mm) return { username: mm[1], message: mm[2] }
+      mm = joined.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
+      if (mm) return { username: mm[1], message: mm[2] }
     }
   } catch (e) {
-    // not JSON, fall through
+    // not JSON, continue
+  }
+
+  // Case g: heuristic using current online players to map "name rest of message"
+  try {
+    if (bot && bot.players) {
+      const players = Object.keys(bot.players)
+      if (players && players.length > 0) {
+        for (const p of players) {
+          if (!p) continue
+          // exact prefix match followed by space or punctuation
+          const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          const re = new RegExp('^' + esc + '[\\s:»,>\\-]+(.+)$', 'i')
+          const hits = r.match(re)
+          if (hits) return { username: p, message: hits[1].trim() }
+        }
+      }
+    }
+  } catch (e) {
+    // ignore heuristic failure
   }
 
   // No username found
   return null
 }
 
-// NLP parsing for commands
+// NLP helpers (unchanged behavior)
 function extractPlayerName(message, defaultName, commandWords = []) {
   const words = message.toLowerCase().split(/\s+/)
   for (const cmdWord of commandWords) {
@@ -260,9 +283,7 @@ function parseInstructionsNLP(username, message) {
     steps.push({ action: 'follow', player: target })
   }
   const coordMatch = message.match(/(?:go to|goto|move to)\s+(-?\d+)[,\s]+(-?\d+)[,\s]+(-?\d+)/i)
-  if (coordMatch) {
-    steps.push({ action: 'goto', x: parseInt(coordMatch[1], 10), y: parseInt(coordMatch[2], 10), z: parseInt(coordMatch[3], 10) })
-  }
+  if (coordMatch) steps.push({ action: 'goto', x: parseInt(coordMatch[1], 10), y: parseInt(coordMatch[2], 10), z: parseInt(coordMatch[3], 10) })
   if ((doc.has('teleport') || message.toLowerCase().includes('/tpa') || message.toLowerCase().includes('tp to')) && !doc.has('request')) {
     const target = extractPlayerName(message, username, ['teleport', 'tp', 'tpa'])
     if (target !== username) steps.push({ action: 'tpa', player: target })
@@ -289,7 +310,7 @@ function generateResponse(message, username, isTrusted) {
   return "I'm here! Let me know if you need anything."
 }
 
-// Validate coords
+// validate coords helper
 function validCoords(x, y, z) {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false
   if (Math.abs(x) > 30000000 || Math.abs(z) > 30000000) return false
@@ -297,7 +318,7 @@ function validCoords(x, y, z) {
   return true
 }
 
-// Execute steps
+// executeSteps (preserves behavior)
 async function executeSteps(username, steps) {
   if (!bot) return
   console.log('[EXEC] Executing ' + steps.length + ' steps for ' + username)
@@ -309,10 +330,7 @@ async function executeSteps(username, steps) {
         case 'follow': {
           await ensurePathfinderLoaded()
           const target = bot.players[step.player]?.entity
-          if (!target) {
-            whisper(username, "I can't see " + step.player + " right now.")
-            break
-          }
+          if (!target) { whisper(username, "I can't see " + step.player + " right now."); break }
           bot.pathfinder.setGoal(null)
           const goal = new GoalFollow(target, 1)
           bot.pathfinder.setGoal(goal, true)
@@ -329,10 +347,7 @@ async function executeSteps(username, steps) {
         }
         case 'goto': {
           await ensurePathfinderLoaded()
-          if (!validCoords(step.x, step.y, step.z)) {
-            whisper(username, 'Those coordinates are invalid or too far.')
-            break
-          }
+          if (!validCoords(step.x, step.y, step.z)) { whisper(username, 'Those coordinates are invalid or too far.'); break }
           bot.pathfinder.setGoal(null)
           const goal = new GoalBlock(step.x, step.y, step.z)
           bot.pathfinder.setGoal(goal)
@@ -365,7 +380,7 @@ async function executeSteps(username, steps) {
   }
 }
 
-// Main chat handler via message parsing
+// main chat handler
 async function handleChat(username, message) {
   if (!bot) return
   if (!username || username === bot.username) return
@@ -381,32 +396,10 @@ async function handleChat(username, message) {
     const delMatch = message.match(/\b(forget|untrust|revoke)\s+(\w+)\b/i)
     const ignoreAdd = message.match(/\bignore\s+(\w+)\b/i)
     const ignoreDel = message.match(/\b(unignore|forgive)\s+(\w+)\b/i)
-    if (addMatch) {
-      const target = addMatch[1]
-      if (!trustedPlayers.includes(target)) { trustedPlayers.push(target); saveTrusted(); whisper(username, target + ' is now trusted') } else whisper(username, target + ' is already trusted')
-      return
-    }
-    if (delMatch) {
-      const target = delMatch[2]
-      const was = trustedPlayers.includes(target)
-      trustedPlayers = trustedPlayers.filter(p => p !== target)
-      saveTrusted()
-      whisper(username, was ? target + ' is no longer trusted' : target + ' was not trusted')
-      return
-    }
-    if (ignoreAdd) {
-      const target = ignoreAdd[1]
-      if (!ignoredPlayers.includes(target)) { ignoredPlayers.push(target); saveIgnored(); whisper(username, target + ' is now ignored') } else whisper(username, target + ' is already ignored')
-      return
-    }
-    if (ignoreDel) {
-      const target = ignoreDel[1]
-      const was = ignoredPlayers.includes(target)
-      ignoredPlayers = ignoredPlayers.filter(p => p !== target)
-      saveIgnored()
-      whisper(username, was ? target + ' is no longer ignored' : target + ' was not ignored')
-      return
-    }
+    if (addMatch) { const target = addMatch[1]; if (!trustedPlayers.includes(target)) { trustedPlayers.push(target); saveTrusted(); whisper(username, target + ' is now trusted') } else whisper(username, target + ' is already trusted'); return }
+    if (delMatch) { const target = delMatch[2]; const was = trustedPlayers.includes(target); trustedPlayers = trustedPlayers.filter(p => p !== target); saveTrusted(); whisper(username, was ? target + ' is no longer trusted' : target + ' was not trusted'); return }
+    if (ignoreAdd) { const target = ignoreAdd[1]; if (!ignoredPlayers.includes(target)) { ignoredPlayers.push(target); saveIgnored(); whisper(username, target + ' is now ignored') } else whisper(username, target + ' is already ignored'); return }
+    if (ignoreDel) { const target = ignoreDel[1]; const was = ignoredPlayers.includes(target); ignoredPlayers = ignoredPlayers.filter(p => p !== target); saveIgnored(); whisper(username, was ? target + ' is no longer ignored' : target + ' was not ignored'); return }
   }
   memory.push({ role: 'user', content: username + ': ' + message })
   while (memory.length > 50) memory.shift()
@@ -441,21 +434,38 @@ async function handleChat(username, message) {
   }
 }
 
-// Setup event handlers for bot instance
+// Setup bot event handlers
 function setupBotEventHandlers() {
   bot.on('error', (err) => {
     console.error('[BOT] Error', err && err.message)
-    setTimeout(() => { console.log('[BOT] reconnecting after error'); initializeBot().catch(e => console.error('[BOT] reconnect failed', e.message)) }, 10000)
+    // If we see PartialReadError mention it and suggest version pin
+    try {
+      const m = err && err.message && err.message.toString()
+      if (m && (m.includes('PartialReadError') || m.includes('Unexpected buffer end') || m.includes('Read error for undefined'))) {
+        console.error('[BOT] PartialReadError or protocol parse error detected. This usually means the server uses a packet format newer than this client library understands. Consider setting MC_VERSION env var to your server version (example "1.20.2") or set FALLBACK_MC_VERSION to a version to try automatically. See logs for details.')
+      }
+    } catch (e) { /* ignore */ }
+
+    setTimeout(() => {
+      console.log('[BOT] reconnecting after error')
+      initializeBot().catch(e2 => console.error('[BOT] reconnect failed', e2 && e2.message))
+    }, 10000)
   })
 
   bot.on('kicked', (reason) => {
     console.log('[BOT] Kicked reason ' + reason)
-    setTimeout(() => { console.log('[BOT] reconnecting after kick'); initializeBot().catch(e => console.error('[BOT] reconnect failed', e.message)) }, 15000)
+    setTimeout(() => {
+      console.log('[BOT] reconnecting after kick')
+      initializeBot().catch(e2 => console.error('[BOT] reconnect failed', e2 && e2.message))
+    }, 15000)
   })
 
   bot.on('end', () => {
     console.log('[BOT] Disconnected')
-    setTimeout(() => { console.log('[BOT] reconnecting after end'); initializeBot().catch(e => console.error('[BOT] reconnect failed', e.message)) }, 10000)
+    setTimeout(() => {
+      console.log('[BOT] reconnecting after end')
+      initializeBot().catch(e2 => console.error('[BOT] reconnect failed', e2 && e2.message))
+    }, 10000)
   })
 
   bot.once('spawn', async () => {
@@ -463,7 +473,7 @@ function setupBotEventHandlers() {
     try { bot.loadPlugin(autoEat); console.log('[SPAWN] AutoEat loaded') } catch (e) { console.error('[SPAWN] AutoEat failed', e.message) }
     try { bot.loadPlugin(AutoAuth); console.log('[SPAWN] AutoAuth loaded') } catch (e) { console.error('[SPAWN] AutoAuth failed', e.message) }
 
-    // Start prismarine viewer on internal port (use same VIEWER_* constants)
+    // Start prismarine viewer on internal port
     try {
       const { mineflayer: startViewer } = await import('prismarine-viewer')
       startViewer(bot, { port: VIEWER_PORT_INTERNAL, firstPerson: (process.env.VIEWER_FIRST_PERSON === 'true') })
@@ -473,12 +483,12 @@ function setupBotEventHandlers() {
     }
   })
 
-  // Use message event for plugin-forwarded lines and vanilla chat fallback
+  // Listen to message event as the primary source for plugin forwarded lines
   bot.on('message', (jsonMsg) => {
     const raw = jsonMsg.toString()
     console.log('[MESSAGE-RAW] ' + raw)
 
-    // Auto accept typical Essentials style tpa prompts
+    // Auto accept typical Essentials style teleport prompts
     const lower = raw.toLowerCase()
     if (lower.includes('has requested to teleport to you') && (lower.includes('tpaccept') || lower.includes('/tpaccept'))) {
       console.log('[TPA] auto-accept detected, sending /tpaccept')
@@ -490,21 +500,27 @@ function setupBotEventHandlers() {
       if (parsed.username === bot.username) return
       handleChat(parsed.username, parsed.message)
     } else {
-      // Fallback: try JSON extraction inside message object
+      // additional fallback: try brute force checking first token against online players
       try {
-        const obj = JSON.parse(raw)
-        if (obj && obj.extra && Array.isArray(obj.extra) && obj.extra.length > 0) {
-          const text = obj.extra.map(x => x.text || '').join(' ')
-          const alt = tryExtractUserFromRaw(text)
-          if (alt) { handleChat(alt.username, alt.message); return }
+        const players = bot && bot.players ? Object.keys(bot.players) : []
+        if (players && players.length > 0) {
+          const parts = raw.trim().split(/\s+/)
+          const first = parts[0]
+          if (first && players.includes(first)) {
+            const rest = parts.slice(1).join(' ').trim()
+            handleChat(first, rest || '')
+            return
+          }
         }
-      } catch (e) { /* not JSON */ }
+      } catch (e) { /* ignore */ }
+
+      // If still cannot extract, preserve raw line in logs so you can paste it for me
       console.log('[MESSAGE-RAW] Could not extract username from raw line. Please paste this raw line to help adjust regex: ' + raw)
     }
   })
 }
 
-// Mount proxy for viewer with websocket support
+// Mount proxy for viewer including websocket support
 app.use(
   '/viewer',
   createProxyMiddleware({
@@ -516,24 +532,29 @@ app.use(
   })
 )
 
-// Start server (http server so upgrade events are handled) and initialize bot after listening
+// Create http server so upgrade events are handled
 const server = http.createServer(app)
 server.on('upgrade', (req, socket, head) => {
-  // http-proxy-middleware handles upgrades automatically; keep handler to avoid dropped upgrades
+  // http-proxy-middleware handles upgrades automatically.
 })
 server.listen(PORT, '0.0.0.0', () => {
   console.log('[WEB] Express listening on 0.0.0.0:' + PORT + ' proxy viewer at /viewer')
+  // Do not call initializeBot here if you want to start manually; we will start it now
   initializeBot().catch(e => console.error('[START] initializeBot threw', e && e.message))
 })
 
-// Initialize bot with retries
+// initialize bot with retries and optional fallback version behavior
 async function initializeBot() {
   const maxRetries = 5
   let attempt = 0
+  // decide base version to use: if MC_VERSION set, use it; otherwise false to auto detect
+  const baseVersion = process.env.MC_VERSION ? process.env.MC_VERSION : false
+  const fallbackVersionEnv = process.env.FALLBACK_MC_VERSION || null
+
   while (attempt < maxRetries) {
     attempt++
     try {
-      console.log('[INIT] Creating bot attempt ' + attempt)
+      console.log('[INIT] Creating bot attempt ' + attempt + ' using version=' + (baseVersion || 'auto-detect'))
       bot = createBot({
         host: process.env.BOT_HOST || 'localhost',
         port: parseInt(process.env.BOT_PORT || '25565', 10),
@@ -547,23 +568,50 @@ async function initializeBot() {
         },
         connectTimeout: 30000,
         checkTimeoutInterval: 10000,
-        version: process.env.MC_VERSION || false
+        version: baseVersion
       })
       setupBotEventHandlers()
       break
     } catch (e) {
-      console.error('[INIT] createBot failed', e.message)
+      console.error('[INIT] createBot failed', e && e.message)
+      // If we get a PartialReadError or similar and a fallback version is provided, try it once
+      const msg = e && e.message ? e.message.toString() : ''
+      if (fallbackVersionEnv && msg && (msg.includes('PartialReadError') || msg.includes('Unexpected buffer end') || msg.includes('Read error for undefined'))) {
+        console.log('[INIT] Detected parsing error. Retrying with FALLBACK_MC_VERSION=' + fallbackVersionEnv)
+        try {
+          bot = createBot({
+            host: process.env.BOT_HOST || 'localhost',
+            port: parseInt(process.env.BOT_PORT || '25565', 10),
+            username: process.env.BOT_USERNAME || 'phyll',
+            auth: process.env.BOT_AUTH || 'offline',
+            plugins: [AutoAuth],
+            AutoAuth: {
+              password: process.env.BOT_PASSWORD,
+              logging: true,
+              ignoreRepeat: true
+            },
+            connectTimeout: 30000,
+            checkTimeoutInterval: 10000,
+            version: fallbackVersionEnv
+          })
+          setupBotEventHandlers()
+          break
+        } catch (e2) {
+          console.error('[INIT] Fallback createBot failed', e2 && e2.message)
+        }
+      }
+
       if (attempt < maxRetries) {
         const delay = 5000 * attempt
         console.log('[INIT] retrying in ' + Math.floor(delay / 1000) + 's')
         await new Promise(r => setTimeout(r, delay))
       } else {
-        console.error('[INIT] max retries reached')
+        console.error('[INIT] max retries reached. If you see PartialReadError in the logs, set environment variable MC_VERSION to your server version (example "1.20.2") or FALLBACK_MC_VERSION to try a specific version automatically. See the PrismarineJS issue tracker for details.')
       }
     }
   }
 }
 
-// Periodic saves and heartbeat
+// periodic saves and heartbeat
 setInterval(() => { saveMemory(); saveTrusted(); saveIgnored() }, 10 * 60 * 1000)
 setInterval(() => console.log('[HEARTBEAT] status ' + (bot ? (bot.entity ? 'connected' : 'disconnected') : 'not initialized')), 5 * 60 * 1000)
