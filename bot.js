@@ -10,21 +10,31 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import http from 'http'
 import { createProxyMiddleware } from 'http-proxy-middleware'
+import net from 'net'
 
 config()
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Logging to console and file
+// ---------- Logging (ASCII-only sanitized) ----------
 const LOG_PATH = process.env.BOT_LOG_FILE || '/tmp/bot-debug.log'
 const logStream = fs.createWriteStream(LOG_PATH, { flags: 'a' })
+
+function sanitizeAscii(s) {
+  try {
+    return String(s).replace(/[^\x09\x0A\x0D\x20-\x7E]/g, '?')
+  } catch (e) {
+    return String(s)
+  }
+}
+
 function safeWriteLog(prefix, args) {
   try {
     const msg = Array.from(args).map(a => {
       if (typeof a === 'string') return a
       try { return JSON.stringify(a) } catch { return String(a) }
     }).join(' ')
-    const line = `${new Date().toISOString()} ${prefix} ${msg}\n`
+    const line = `${new Date().toISOString()} ${prefix} ${sanitizeAscii(msg)}\n`
     process.stdout.write(line)
     logStream.write(line)
   } catch (e) {
@@ -35,42 +45,15 @@ console.log = (...args) => safeWriteLog('[INFO]', args)
 console.warn = (...args) => safeWriteLog('[WARN]', args)
 console.error = (...args) => safeWriteLog('[ERROR]', args)
 
-// Express app and port
+// ---------- Express app and viewer proxy config ----------
 const app = express()
 const PORT = parseInt(process.env.PORT || '3000', 10)
 
-// Viewer proxy constants
 const VIEWER_PORT_INTERNAL = parseInt(process.env.VIEWER_PORT || '3001', 10)
 const VIEWER_HOST_INTERNAL = process.env.VIEWER_HOST || '127.0.0.1'
 const VIEWER_TARGET = `http://${VIEWER_HOST_INTERNAL}:${VIEWER_PORT_INTERNAL}`
 
-// Global bot variable (so web endpoints can access it)
-let bot = null
-
-// Basic endpoints
-app.get('/', (req, res) => {
-  res.json({
-    status: bot ? 'online' : 'not initialized',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    bot: bot ? {
-      username: bot.username,
-      connected: !!bot.entity,
-      health: bot.health || 0,
-      food: bot.food || 0,
-      position: bot.entity ? bot.entity.position : null
-    } : null
-  })
-})
-app.get('/health', (req, res) => {
-  res.json({
-    status: bot ? 'healthy' : 'not initialized',
-    timestamp: new Date().toISOString(),
-    botConnected: !!(bot && bot.entity)
-  })
-})
-
-// Settings and storage
+// ---------- Persistent state and files ----------
 const ownerName = process.env.OWNER_NAME || 'TryChloroform'
 const botNames = process.env.BOT_NAMES ? process.env.BOT_NAMES.split(',') : ['trychlorophyll', 'phyll']
 let trustedPlayers = [ownerName]
@@ -79,74 +62,57 @@ const memoryFile = process.env.MEMORY_FILE || '/tmp/memory.json'
 const trustedFile = process.env.TRUSTED_FILE || '/tmp/trusted.json'
 const ignoredFile = process.env.IGNORED_FILE || '/tmp/ignored.json'
 
-// Load memory and lists
 let memory = []
 try {
   memory = fs.existsSync(memoryFile) ? JSON.parse(fs.readFileSync(memoryFile, 'utf8')) : []
   console.log('[MEMORY] Loaded entries count ' + memory.length)
-} catch (e) {
-  console.error('[MEMORY] Load failed', e.message)
-  memory = []
-}
+} catch (e) { console.error('[MEMORY] Load failed', e.message); memory = [] }
+
 try {
   trustedPlayers = fs.existsSync(trustedFile) ? JSON.parse(fs.readFileSync(trustedFile, 'utf8')) : trustedPlayers
   console.log('[TRUST] Loaded trusted players ' + JSON.stringify(trustedPlayers))
-} catch (e) {
-  console.warn('[TRUST] Load failed', e.message)
-}
+} catch (e) { console.warn('[TRUST] Load failed', e.message) }
+
 try {
   ignoredPlayers = fs.existsSync(ignoredFile) ? JSON.parse(fs.readFileSync(ignoredFile, 'utf8')) : []
   console.log('[IGNORE] Loaded ignored players ' + JSON.stringify(ignoredPlayers))
-} catch (e) {
-  console.warn('[IGNORE] Load failed', e.message)
-}
+} catch (e) { console.warn('[IGNORE] Load failed', e.message) }
+
 function saveMemory() {
   try {
     fs.writeFileSync(memoryFile, JSON.stringify(memory.slice(-50), null, 2))
     console.log('[MEMORY] Saved ' + Math.min(memory.length, 50) + ' entries')
-  } catch (e) {
-    console.error('[MEMORY] Save failed', e.message)
-  }
+  } catch (e) { console.error('[MEMORY] Save failed', e.message) }
 }
 function saveTrusted() {
-  try {
-    fs.writeFileSync(trustedFile, JSON.stringify(trustedPlayers, null, 2))
-    console.log('[TRUST] Saved trusted players')
-  } catch (e) { console.error('[TRUST] Save failed', e.message) }
+  try { fs.writeFileSync(trustedFile, JSON.stringify(trustedPlayers, null, 2)); console.log('[TRUST] Saved trusted players') } catch (e) { console.error('[TRUST] Save failed', e.message) }
 }
 function saveIgnored() {
-  try {
-    fs.writeFileSync(ignoredFile, JSON.stringify(ignoredPlayers, null, 2))
-    console.log('[IGNORE] Saved ignored players')
-  } catch (e) { console.error('[IGNORE] Save failed', e.message) }
+  try { fs.writeFileSync(ignoredFile, JSON.stringify(ignoredPlayers, null, 2)); console.log('[IGNORE] Saved ignored players') } catch (e) { console.error('[IGNORE] Save failed', e.message) }
 }
 
-// NLP loader
+// ---------- NLP loader ----------
 let nlp = null
 try {
   const compromiseImport = await import('compromise')
-  nlp = compromiseImport.default
+  nlp = compromiseImport.default || compromiseImport
   console.log('[NLP] Compromise loaded')
 } catch (e) {
   console.warn('[NLP] Compromise load failed, fallback active', e.message)
-  nlp = (text) => ({
-    has: (word) => ('' + text).toLowerCase().includes(('' + word).toLowerCase())
-  })
+  nlp = (text) => ({ has: (word) => ('' + text).toLowerCase().includes(('' + word).toLowerCase()) })
 }
 
-// Graceful shutdown
+// ---------- Graceful shutdown ----------
 function shutdown(signal) {
   console.log('[SYSTEM] ' + signal + ' received, saving and exiting')
-  saveMemory()
-  saveTrusted()
-  saveIgnored()
-  if (bot) bot.quit('Server shutting down')
+  saveMemory(); saveTrusted(); saveIgnored()
+  try { if (bot) bot.quit('Server shutting down') } catch (e) { console.warn('[SYSTEM] quit failed', e.message) }
   setTimeout(() => process.exit(0), 500)
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
-// Pathfinder variables
+// ---------- Pathfinder and movement exports (safe resolution) ----------
 let pathfinderLoaded = false
 let Movements = null
 let goals = null
@@ -154,62 +120,80 @@ let GoalBlock = null
 let GoalFollow = null
 
 async function ensurePathfinderLoaded() {
-  if (!pathfinderLoaded && bot) {
-    console.log('[PATH] Loading pathfinder')
-    const pathfinderPkg = await import('mineflayer-pathfinder')
-    bot.loadPlugin(pathfinderPkg.pathfinder)
-    Movements = pathfinderPkg.Movements
-    goals = pathfinderPkg.goals
-    GoalBlock = goals.GoalBlock
-    GoalFollow = goals.GoalFollow
+  if (pathfinderLoaded) return
+  if (!bot) throw new Error('Bot not initialized when loading pathfinder')
+  console.log('[PATH] Loading pathfinder package')
+  try {
+    const pathfinderPkgRaw = await import('mineflayer-pathfinder')
+    const pf = pathfinderPkgRaw.default || pathfinderPkgRaw
+
+    // resolve plugin and exports resiliently
+    const pathfinderPlugin = pf.pathfinder || pf.default?.pathfinder || pf.pathfinder?.default || (pf)
+    Movements = pf.Movements || pf.Movements || pf.default?.Movements
+    goals = pf.goals || pf.goals || pf.default?.goals
+
+    // Debug dump for troubleshooting if exports not found
+    if (!goals || !Movements || !pathfinderPlugin) {
+      console.error('[PATH] Could not resolve pathfinder exports. pf keys: ' + Object.keys(pf).join(', '))
+      throw new Error('pathfinder exports missing')
+    }
+
+    // load plugin into bot
+    bot.loadPlugin(pathfinderPlugin)
+    GoalBlock = goals.GoalBlock || goals.GoalBlockGoal || goals.Goal || null
+    GoalFollow = goals.GoalFollow || goals.GoalFollowGoal || null
+
     const mcData = minecraftData(bot.version)
     bot.pathfinder.setMovements(new Movements(bot, mcData))
+
     pathfinderLoaded = true
-    console.log('[PATH] Pathfinder ready for version ' + bot.version)
+    console.log('[PATH] Pathfinder ready; GoalBlock present=' + !!GoalBlock + ' GoalFollow present=' + !!GoalFollow)
+  } catch (e) {
+    console.error('[PATH] ensurePathfinderLoaded failed', e && e.message)
+    throw e
   }
 }
 
-// Whisper helper
+// ---------- Utilities ----------
+let bot = null
+
 function whisper(player, message) {
   if (!bot) return
   console.log('[WHISPER] ->' + player + ' ' + message)
   try {
-    if (bot.players[player]) bot.chat('/msg ' + player + ' ' + message)
+    if (bot.players && bot.players[player]) bot.chat('/msg ' + player + ' ' + message)
     else bot.chat(message)
-  } catch (e) {
-    console.error('[WHISPER] Send failed', e.message)
-  }
+  } catch (e) { console.error('[WHISPER] Send failed', e.message) }
 }
 
-// Improved raw message extraction
+// ---------- Raw message extraction ----------
 function tryExtractUserFromRaw(raw) {
   if (!raw) return null
   const r = String(raw).trim()
 
-  // Case a: vanilla format <user> message
+  // vanilla <user> message
   let m = r.match(/^<(\w+)>[ ](.+)$/)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case b: Discord style with pipe and » your logs showed:
-  // Example: [Discord] | TryChloroform » Geebleeeee what msg plugin...
+  // Discord style from your logs
   m = r.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case c: simpler Discord format "[Discord] user: message"
+  // "[Discord] user: message"
   m = r.match(/^\[Discord\][ ]*(.+?):[ ](.+)$/i)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case d: "user: message"
+  // "user: message"
   m = r.match(/^(\w+):[ ](.+)$/)
   if (m) return { username: m[1], message: m[2] }
 
-  // Case e: join/leave lines like "name has joined the server!"
+  // join/leave lines
   m = r.match(/^(.+?) has joined the server!?$/i)
   if (m) return { username: m[1], message: `${m[1]} has joined` }
   m = r.match(/^(.+?) has left the server!?$/i)
   if (m) return { username: m[1], message: `${m[1]} left` }
 
-  // Case f: JSON text object common in newer servers/plugins
+  // try JSON text object
   try {
     const obj = JSON.parse(r)
     if (obj && typeof obj === 'object') {
@@ -227,25 +211,24 @@ function tryExtractUserFromRaw(raw) {
         }
       }
       const joined = textParts.join(' ').trim()
-      let mm = joined.match(/^<(\w+)>[ ](.+)$/)
-      if (mm) return { username: mm[1], message: mm[2] }
-      mm = joined.match(/^(\w+):[ ](.+)$/)
-      if (mm) return { username: mm[1], message: mm[2] }
-      mm = joined.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
-      if (mm) return { username: mm[1], message: mm[2] }
+      if (joined) {
+        let mm = joined.match(/^<(\w+)>[ ](.+)$/)
+        if (mm) return { username: mm[1], message: mm[2] }
+        mm = joined.match(/^(\w+):[ ](.+)$/)
+        if (mm) return { username: mm[1], message: mm[2] }
+        mm = joined.match(/^\[Discord\][ ]*\|[ ]*([^»\s]+)\s*»\s*(.+)$/i)
+        if (mm) return { username: mm[1], message: mm[2] }
+      }
     }
-  } catch (e) {
-    // not JSON, continue
-  }
+  } catch (e) { /* not JSON */ }
 
-  // Case g: heuristic using current online players to map "name rest of message"
+  // heuristic using online player list: if line starts with known player name
   try {
     if (bot && bot.players) {
       const players = Object.keys(bot.players)
       if (players && players.length > 0) {
         for (const p of players) {
           if (!p) continue
-          // exact prefix match followed by space or punctuation
           const esc = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
           const re = new RegExp('^' + esc + '[\\s:»,>\\-]+(.+)$', 'i')
           const hits = r.match(re)
@@ -253,15 +236,12 @@ function tryExtractUserFromRaw(raw) {
         }
       }
     }
-  } catch (e) {
-    // ignore heuristic failure
-  }
+  } catch (e) { /* ignore */ }
 
-  // No username found
   return null
 }
 
-// NLP helpers (unchanged behavior)
+// ---------- NLP instruction parsing (kept behavior) ----------
 function extractPlayerName(message, defaultName, commandWords = []) {
   const words = message.toLowerCase().split(/\s+/)
   for (const cmdWord of commandWords) {
@@ -310,7 +290,6 @@ function generateResponse(message, username, isTrusted) {
   return "I'm here! Let me know if you need anything."
 }
 
-// validate coords helper
 function validCoords(x, y, z) {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false
   if (Math.abs(x) > 30000000 || Math.abs(z) > 30000000) return false
@@ -318,7 +297,7 @@ function validCoords(x, y, z) {
   return true
 }
 
-// executeSteps (preserves behavior)
+// ---------- Execution of parsed steps with defensive checks ----------
 async function executeSteps(username, steps) {
   if (!bot) return
   console.log('[EXEC] Executing ' + steps.length + ' steps for ' + username)
@@ -328,7 +307,18 @@ async function executeSteps(username, steps) {
     try {
       switch (step.action) {
         case 'follow': {
-          await ensurePathfinderLoaded()
+          try {
+            await ensurePathfinderLoaded()
+          } catch (e) {
+            console.error('[EXEC] cannot load pathfinder for follow', e && e.message)
+            whisper(username, 'Pathfinder could not be loaded; follow not possible.')
+            break
+          }
+          if (!GoalFollow) {
+            console.error('[EXEC] GoalFollow is undefined after loading pathfinder.')
+            whisper(username, 'Internal error: pathfinding follow goal class missing.')
+            break
+          }
           const target = bot.players[step.player]?.entity
           if (!target) { whisper(username, "I can't see " + step.player + " right now."); break }
           bot.pathfinder.setGoal(null)
@@ -337,7 +327,7 @@ async function executeSteps(username, steps) {
           whisper(username, 'Following ' + step.player)
           setTimeout(() => {
             try {
-              if (bot && bot.pathfinder && bot.pathfinder.goal instanceof GoalFollow) {
+              if (bot && bot.pathfinder && bot.pathfinder.goal && bot.pathfinder.goal instanceof GoalFollow) {
                 bot.pathfinder.setGoal(null)
                 whisper(username, 'Stopped following ' + step.player)
               }
@@ -346,18 +336,29 @@ async function executeSteps(username, steps) {
           break
         }
         case 'goto': {
-          await ensurePathfinderLoaded()
+          try {
+            await ensurePathfinderLoaded()
+          } catch (e) {
+            console.error('[EXEC] cannot load pathfinder for goto', e && e.message)
+            whisper(username, 'Pathfinder could not be loaded; goto not possible.')
+            break
+          }
+          if (!GoalBlock) {
+            console.error('[EXEC] GoalBlock is undefined after loading pathfinder.')
+            whisper(username, 'Internal error: pathfinding goto goal class missing.')
+            break
+          }
           if (!validCoords(step.x, step.y, step.z)) { whisper(username, 'Those coordinates are invalid or too far.'); break }
           bot.pathfinder.setGoal(null)
-          const goal = new GoalBlock(step.x, step.y, step.z)
-          bot.pathfinder.setGoal(goal)
+          const g = new GoalBlock(step.x, step.y, step.z)
+          bot.pathfinder.setGoal(g)
           whisper(username, 'Going to ' + step.x + ', ' + step.y + ', ' + step.z)
           break
         }
         case 'tpa': {
           if (!step.player) { whisper(username, 'I need to know who to teleport to.'); break }
           console.log('[TPA] sending /tpa ' + step.player)
-          bot.chat('/tpa ' + step.player)
+          try { bot.chat('/tpa ' + step.player) } catch (e) { console.error('[TPA] send failed', e.message) }
           whisper(username, 'Sent teleport request to ' + step.player)
           break
         }
@@ -380,7 +381,7 @@ async function executeSteps(username, steps) {
   }
 }
 
-// main chat handler
+// ---------- Chat handling routed from message extraction ----------
 async function handleChat(username, message) {
   if (!bot) return
   if (!username || username === bot.username) return
@@ -401,8 +402,10 @@ async function handleChat(username, message) {
     if (ignoreAdd) { const target = ignoreAdd[1]; if (!ignoredPlayers.includes(target)) { ignoredPlayers.push(target); saveIgnored(); whisper(username, target + ' is now ignored') } else whisper(username, target + ' is already ignored'); return }
     if (ignoreDel) { const target = ignoreDel[1]; const was = ignoredPlayers.includes(target); ignoredPlayers = ignoredPlayers.filter(p => p !== target); saveIgnored(); whisper(username, was ? target + ' is no longer ignored' : target + ' was not ignored'); return }
   }
+
   memory.push({ role: 'user', content: username + ': ' + message })
   while (memory.length > 50) memory.shift()
+
   if (isTrusted) {
     try {
       const steps = parseInstructionsNLP(username, message)
@@ -419,10 +422,12 @@ async function handleChat(username, message) {
       return
     }
   }
+
   if (!isTrusted && /\b(follow|goto|come|hold|drop|tp|tpa|wait|mine|build|attack)\b/i.test(msgLower)) {
     whisper(username, 'Sorry, only trusted players can give me commands. Ask ' + ownerName + '!')
     return
   }
+
   try {
     const reply = generateResponse(message, username, isTrusted)
     whisper(username, reply)
@@ -434,15 +439,14 @@ async function handleChat(username, message) {
   }
 }
 
-// Setup bot event handlers
+// ---------- Bot event handlers and message listener ----------
 function setupBotEventHandlers() {
   bot.on('error', (err) => {
     console.error('[BOT] Error', err && err.message)
-    // If we see PartialReadError mention it and suggest version pin
     try {
       const m = err && err.message && err.message.toString()
-      if (m && (m.includes('PartialReadError') || m.includes('Unexpected buffer end') || m.includes('Read error for undefined'))) {
-        console.error('[BOT] PartialReadError or protocol parse error detected. This usually means the server uses a packet format newer than this client library understands. Consider setting MC_VERSION env var to your server version (example "1.20.2") or set FALLBACK_MC_VERSION to a version to try automatically. See logs for details.')
+      if (m && (m.includes('PartialReadError') || m.includes('Unexpected buffer end') || m.includes('Read error'))) {
+        console.error('[BOT] Protocol parse error. If you see this, set MC_VERSION to your server version or set FALLBACK_MC_VERSION to let the bot retry with a pinned version.')
       }
     } catch (e) { /* ignore */ }
 
@@ -454,18 +458,12 @@ function setupBotEventHandlers() {
 
   bot.on('kicked', (reason) => {
     console.log('[BOT] Kicked reason ' + reason)
-    setTimeout(() => {
-      console.log('[BOT] reconnecting after kick')
-      initializeBot().catch(e2 => console.error('[BOT] reconnect failed', e2 && e2.message))
-    }, 15000)
+    setTimeout(() => { console.log('[BOT] reconnecting after kick'); initializeBot().catch(e => console.error('[BOT] reconnect failed', e && e.message)) }, 15000)
   })
 
   bot.on('end', () => {
     console.log('[BOT] Disconnected')
-    setTimeout(() => {
-      console.log('[BOT] reconnecting after end')
-      initializeBot().catch(e2 => console.error('[BOT] reconnect failed', e2 && e2.message))
-    }, 10000)
+    setTimeout(() => { console.log('[BOT] reconnecting after end'); initializeBot().catch(e => console.error('[BOT] reconnect failed', e && e.message)) }, 10000)
   })
 
   bot.once('spawn', async () => {
@@ -483,12 +481,11 @@ function setupBotEventHandlers() {
     }
   })
 
-  // Listen to message event as the primary source for plugin forwarded lines
+  // Prefer message event (works for plugin forwarded lines) and fallback to chat behavior
   bot.on('message', (jsonMsg) => {
     const raw = jsonMsg.toString()
     console.log('[MESSAGE-RAW] ' + raw)
 
-    // Auto accept typical Essentials style teleport prompts
     const lower = raw.toLowerCase()
     if (lower.includes('has requested to teleport to you') && (lower.includes('tpaccept') || lower.includes('/tpaccept'))) {
       console.log('[TPA] auto-accept detected, sending /tpaccept')
@@ -500,7 +497,7 @@ function setupBotEventHandlers() {
       if (parsed.username === bot.username) return
       handleChat(parsed.username, parsed.message)
     } else {
-      // additional fallback: try brute force checking first token against online players
+      // fallback heuristic: first token equals an online player name
       try {
         const players = bot && bot.players ? Object.keys(bot.players) : []
         if (players && players.length > 0) {
@@ -514,47 +511,77 @@ function setupBotEventHandlers() {
         }
       } catch (e) { /* ignore */ }
 
-      // If still cannot extract, preserve raw line in logs so you can paste it for me
       console.log('[MESSAGE-RAW] Could not extract username from raw line. Please paste this raw line to help adjust regex: ' + raw)
     }
   })
 }
 
-// Mount proxy for viewer including websocket support
-app.use(
-  '/viewer',
-  createProxyMiddleware({
-    target: VIEWER_TARGET,
-    changeOrigin: true,
-    ws: true,
-    pathRewrite: { '^/viewer': '/' },
-    logLevel: 'warn'
+// ---------- Viewer proxy that supports websockets ----------
+// Viewer readiness probe
+function checkTcp(host, port, timeout = 300) {
+  return new Promise((resolve, reject) => {
+    const socket = new net.Socket()
+    let done = false
+    socket.setTimeout(timeout)
+    socket.once('error', (err) => { if (!done) { done = true; socket.destroy(); reject(err) } })
+    socket.once('timeout', () => { if (!done) { done = true; socket.destroy(); reject(new Error('timeout')) } })
+    socket.connect(port, host, () => { if (!done) { done = true; socket.end(); resolve() } })
   })
-)
+}
+
+// Friendly middleware: only proxy if viewer reachable
+app.use('/viewer', async (req, res, next) => {
+  try {
+    await checkTcp(VIEWER_HOST_INTERNAL, VIEWER_PORT_INTERNAL, 300)
+    return next()
+  } catch (err) {
+    console.log('[PROXY] Viewer not reachable; returning 503 to client. host=' + VIEWER_HOST_INTERNAL + ' port=' + VIEWER_PORT_INTERNAL + ' err=' + (err && err.message))
+    res.status(503).send('Viewer not ready. Try again in a few seconds.')
+  }
+})
+
+// Proxy with websocket support and onError handler
+app.use('/viewer', createProxyMiddleware({
+  target: VIEWER_TARGET,
+  changeOrigin: true,
+  ws: true,
+  pathRewrite: { '^/viewer': '/' },
+  logLevel: 'warn',
+  onError: (err, req, res) => {
+    try {
+      console.error('[PROXY] error while proxying to viewer', err && err.message)
+      if (!res.headersSent) {
+        res.status(502).send('Viewer proxy error. See server logs for details.')
+      } else {
+        // if headers already sent, close connection
+        res.end()
+      }
+    } catch (e) {
+      console.error('[PROXY] onError handler failed', e && e.message)
+    }
+  }
+}))
+
 
 // Create http server so upgrade events are handled
 const server = http.createServer(app)
-server.on('upgrade', (req, socket, head) => {
-  // http-proxy-middleware handles upgrades automatically.
-})
+server.on('upgrade', (req, socket, head) => { /* middleware handles upgrades */ })
 server.listen(PORT, '0.0.0.0', () => {
   console.log('[WEB] Express listening on 0.0.0.0:' + PORT + ' proxy viewer at /viewer')
-  // Do not call initializeBot here if you want to start manually; we will start it now
   initializeBot().catch(e => console.error('[START] initializeBot threw', e && e.message))
 })
 
-// initialize bot with retries and optional fallback version behavior
+// ---------- Bot initialization with retry and optional fallback version ----------
 async function initializeBot() {
   const maxRetries = 5
   let attempt = 0
-  // decide base version to use: if MC_VERSION set, use it; otherwise false to auto detect
   const baseVersion = process.env.MC_VERSION ? process.env.MC_VERSION : false
   const fallbackVersionEnv = process.env.FALLBACK_MC_VERSION || null
 
   while (attempt < maxRetries) {
     attempt++
     try {
-      console.log('[INIT] Creating bot attempt ' + attempt + ' using version=' + (baseVersion || 'auto-detect'))
+      console.log('[INIT] Creating bot attempt ' + attempt + ' version=' + (baseVersion || 'auto'))
       bot = createBot({
         host: process.env.BOT_HOST || 'localhost',
         port: parseInt(process.env.BOT_PORT || '25565', 10),
@@ -574,11 +601,10 @@ async function initializeBot() {
       break
     } catch (e) {
       console.error('[INIT] createBot failed', e && e.message)
-      // If we get a PartialReadError or similar and a fallback version is provided, try it once
-      const msg = e && e.message ? e.message.toString() : ''
-      if (fallbackVersionEnv && msg && (msg.includes('PartialReadError') || msg.includes('Unexpected buffer end') || msg.includes('Read error for undefined'))) {
-        console.log('[INIT] Detected parsing error. Retrying with FALLBACK_MC_VERSION=' + fallbackVersionEnv)
+      const msg = e && e.message ? String(e.message) : ''
+      if (fallbackVersionEnv && msg && (msg.includes('PartialReadError') || msg.includes('Unexpected buffer end') || msg.includes('Read error'))) {
         try {
+          console.log('[INIT] Retrying with FALLBACK_MC_VERSION=' + fallbackVersionEnv)
           bot = createBot({
             host: process.env.BOT_HOST || 'localhost',
             port: parseInt(process.env.BOT_PORT || '25565', 10),
@@ -597,21 +623,20 @@ async function initializeBot() {
           setupBotEventHandlers()
           break
         } catch (e2) {
-          console.error('[INIT] Fallback createBot failed', e2 && e2.message)
+          console.error('[INIT] fallback createBot failed', e2 && e2.message)
         }
       }
-
       if (attempt < maxRetries) {
         const delay = 5000 * attempt
         console.log('[INIT] retrying in ' + Math.floor(delay / 1000) + 's')
         await new Promise(r => setTimeout(r, delay))
       } else {
-        console.error('[INIT] max retries reached. If you see PartialReadError in the logs, set environment variable MC_VERSION to your server version (example "1.20.2") or FALLBACK_MC_VERSION to try a specific version automatically. See the PrismarineJS issue tracker for details.')
+        console.error('[INIT] max retries reached. If you see PartialReadError set MC_VERSION or FALLBACK_MC_VERSION to your server version.')
       }
     }
   }
 }
 
-// periodic saves and heartbeat
+// periodic tasks
 setInterval(() => { saveMemory(); saveTrusted(); saveIgnored() }, 10 * 60 * 1000)
 setInterval(() => console.log('[HEARTBEAT] status ' + (bot ? (bot.entity ? 'connected' : 'disconnected') : 'not initialized')), 5 * 60 * 1000)
