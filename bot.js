@@ -11,9 +11,8 @@ const bot = mineflayer.createBot({
   host: process.env.SERVER_HOST || 'localhost',
   port: parseInt(process.env.SERVER_PORT) || 25565,
   username: process.env.BOT_USERNAME || 'MinecraftBot',
-  password: process.env.BOT_PASSWORD, // Leave undefined for offline mode
-  auth: process.env.BOT_PASSWORD ? 'microsoft' : 'offline',
-  version: process.env.MC_VERSION || '1.20.1'
+  auth: 'offline',
+  version: process.env.MC_VERSION || '1.21.7'
 });
 
 // Auto-auth plugin
