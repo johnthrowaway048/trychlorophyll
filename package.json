@@ -8,11 +8,11 @@
     "start": "node bot.js"
   },
   "dependencies": {
-    "mineflayer": "*",
-    "prismarine-viewer": "*",
-    "mineflayer-auto-auth": "*",
-    "mineflayer-auto-eat": "*",
-    "dotenv": "*",
-	"canvas": "*"
+	"dotenv": "^16.0.0",
+	"express": "^4.18.2",
+	"mineflayer": "^4.0.0",
+	"mineflayer-auto-auth": "^2.0.0",
+	"mineflayer-auto-eat": "^5.0.3",
+	"prismarine-viewer": "^1.33.0"
   }
 }
