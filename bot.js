@@ -1,6 +1,6 @@
 import mineflayer from 'mineflayer';
 import { mineflayer as mineflayerViewer } from 'prismarine-viewer';
-import autoeat from 'mineflayer-auto-eat';
+import { loader as autoeat} from 'mineflayer-auto-eat';
 import autoAuth from 'mineflayer-auto-auth';
 import dotenv from 'dotenv';
 
