@@ -1,8 +1,11 @@
-const mineflayer = require('mineflayer');
-const { mineflayer: mineflayerViewer } = require('prismarine-viewer');
+import mineflayer from 'mineflayer';
+import { mineflayer as mineflayerViewer } from 'prismarine-viewer';
+import autoeat from 'mineflayer-auto-eat';
+import autoAuth from 'mineflayer-auto-auth';
+import dotenv from 'dotenv';
 
 // Load environment variables
-require('dotenv').config();
+dotenv.config();
 
 const bot = mineflayer.createBot({
   host: process.env.SERVER_HOST || 'localhost',
@@ -14,24 +17,35 @@ const bot = mineflayer.createBot({
 });
 
 // Auto-auth plugin
-let autoAuthEnabled = process.env.AUTO_AUTH === 'true';
-let loginPassword = process.env.LOGIN_PASSWORD;
+if (process.env.AUTO_AUTH === 'true' && process.env.LOGIN_PASSWORD) {
+  bot.loadPlugin(autoAuth);
+  bot.once('spawn', () => {
+    console.log('Auto-auth plugin initialized');
+  });
+}
 
-// Auto-eat settings
-let autoEatEnabled = process.env.AUTO_EAT === 'true';
-const HUNGER_THRESHOLD = 16; // Eat when hunger is below this level
-const HEALTH_THRESHOLD = 15; // Eat when health is below this level
+// Auto-eat plugin
+if (process.env.AUTO_EAT === 'true') {
+  bot.loadPlugin(autoeat);
+  bot.once('spawn', () => {
+    bot.autoEat.options = {
+      priority: 'foodPoints',
+      startAt: 16,
+      bannedFood: []
+    };
+    console.log('Auto-eat plugin initialized');
+  });
+}
 
 // Web viewer settings
 const viewerPort = process.env.PORT || 3000; // Use PORT for Render deployment
 
 bot.once('spawn', () => {
   console.log('Bot spawned successfully!');
-  
-  // Initialize web viewer
+
   if (process.env.ENABLE_VIEWER === 'true') {
     try {
-      mineflayerViewer(bot, { 
+      mineflayerViewer(bot, {
         port: viewerPort,
         firstPerson: false
       });
@@ -41,75 +55,10 @@ bot.once('spawn', () => {
       console.error('Failed to start viewer:', error);
     }
   }
-  
+
   console.log(`Logged in as ${bot.entity.username}`);
   console.log(`Bot position: ${bot.entity.position}`);
 });
-
-// Auto-auth functionality
-bot.on('message', (message) => {
-  const msg = message.toString().toLowerCase();
-  
-  if (autoAuthEnabled && loginPassword) {
-    // Common login/register patterns
-    if (msg.includes('/login') || msg.includes('login') || 
-        msg.includes('/register') || msg.includes('register') ||
-        msg.includes('password') || msg.includes('authenticate')) {
-      
-      setTimeout(() => {
-        bot.chat(`/login ${loginPassword}`);
-        console.log('Auto-auth: Attempted login');
-      }, 1000);
-      
-      // Also try register in case it's a new account
-      setTimeout(() => {
-        bot.chat(`/register ${loginPassword} ${loginPassword}`);
-        console.log('Auto-auth: Attempted register');
-      }, 2000);
-    }
-  }
-  
-  console.log(`Chat: ${message}`);
-});
-
-// Auto-eat functionality
-function autoEat() {
-  if (!autoEatEnabled) return;
-  
-  const food = bot.inventory.items().find(item => {
-    return item && item.name && (
-      item.name.includes('bread') ||
-      item.name.includes('apple') ||
-      item.name.includes('carrot') ||
-      item.name.includes('potato') ||
-      item.name.includes('beef') ||
-      item.name.includes('pork') ||
-      item.name.includes('chicken') ||
-      item.name.includes('mutton') ||
-      item.name.includes('fish') ||
-      item.name.includes('cookie') ||
-      item.name.includes('melon') ||
-      item.name.includes('berry')
-    );
-  });
-  
-  const needsFood = bot.food < HUNGER_THRESHOLD || bot.health < HEALTH_THRESHOLD;
-  
-  if (food && needsFood && !bot.pathfinder?.isMoving()) {
-    bot.equip(food, 'hand').then(() => {
-      bot.consume().then(() => {
-        console.log(`Auto-eat: Consumed ${food.name}`);
-      }).catch(err => {
-        console.log('Auto-eat: Failed to consume food:', err.message);
-      });
-    }).catch(err => {
-      console.log('Auto-eat: Failed to equip food:', err.message);
-    });
-  }
-}
-
-// Check for food every 5 seconds
-setInterval(autoEat, 5000);
 
 // Health and hunger monitoring
 bot.on('health', () => {
@@ -129,7 +78,6 @@ bot.on('error', (err) => {
 
 bot.on('end', () => {
   console.log('Bot disconnected');
-  // Auto-reconnect after 5 seconds
   if (process.env.AUTO_RECONNECT === 'true') {
     setTimeout(() => {
       console.log('Attempting to reconnect...');
@@ -150,17 +98,16 @@ bot.on('death', () => {
 // Simple commands
 bot.on('chat', (username, message) => {
   if (username === bot.username) return;
-  
-  // Basic commands (you can expand this)
+
   if (message.startsWith('!pos')) {
     const pos = bot.entity.position;
     bot.chat(`I am at ${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)}`);
   }
-  
+
   if (message.startsWith('!health')) {
     bot.chat(`Health: ${bot.health}/20, Food: ${bot.food}/20`);
   }
-  
+
   if (message.startsWith('!time')) {
     bot.chat(`Time of day: ${bot.time.timeOfDay} ticks`);
   }
