@@ -1,18 +1,20 @@
 {
   "name": "minecraft-bot",
-  "version": "0.0.0",
-  "description": "Minecraft bot with local NLP for instructions, personality, and web status endpoints",
+  "version": "1.0.0",
+  "description": "Minecraft bot with Cerebras AI for instructions and personality",
   "type": "module",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
   "dependencies": {
-	"dotenv": "^16.0.0",
-	"express": "^4.18.2",
-	"mineflayer": "^4.0.0",
-	"mineflayer-auto-auth": "^2.0.0",
-	"mineflayer-auto-eat": "^5.0.3",
-	"prismarine-viewer": "^1.33.0"
+    "dotenv": "^16.3.1",
+    "fs-extra": "^11.1.1",
+    "minecraft-data": "^3.55.0",
+    "mineflayer": "^4.17.0",
+    "mineflayer-auto-auth": "^2.3.1",
+    "mineflayer-auto-eat": "^3.3.0",
+    "mineflayer-pathfinder": "^2.4.3",
+    "node-fetch": "^3.3.2"
   }
 }
