@@ -7,11 +7,11 @@ import autoauth from 'mineflayer-auto-auth';
 import { mineflayer as prismarineViewer } from 'prismarine-viewer';
 
 const bot = mineflayer.createBot({
-  host: process.env.MINECRAFT_HOST,
-  port: parseInt(process.env.MINECRAFT_PORT) || 25565,
-  username: process.env.MINECRAFT_USERNAME,
-  version: process.env.MINECRAFT_VERSION || false,
-  auth: process.env.MINECRAFT_AUTH || 'mojang' // optional, defaults to mojang
+  host: process.env.BOT_HOST,
+  port: parseInt(process.env.BOT_PORT) || 25565,
+  username: process.env.BOT_USERNAME,
+  version: false,
+  auth: process.env.BOT_AUTH || 'mojang' // optional, defaults to mojang
 });
 
 // Auto-auth config
@@ -22,8 +22,8 @@ bot.once('spawn', () => {
   console.log('Bot spawned!');
 
   // Auto-auth (usually for online-mode servers with plugins like AuthMe)
-  if (process.env.MINECRAFT_PASSWORD) {
-    bot.authWithPassword(process.env.MINECRAFT_PASSWORD);
+  if (process.env.BOT_PASSWORD) {
+    bot.authWithPassword(process.env.BOT_PASSWORD);
   }
 
   // Auto-eat setup
