@@ -17,7 +17,14 @@ const bot = mineflayer.createBot({
 
 // Auto-auth plugin
 if (process.env.AUTO_AUTH === 'true' && process.env.LOGIN_PASSWORD) {
-  bot.loadPlugin(autoAuth);
+  bot.loadPlugin((bot) =>
+    autoAuth(bot, {
+      logging: true,
+      password: process.env.LOGIN_PASSWORD,
+      ignoreRepeat: true
+    })
+  );
+  
   bot.once('spawn', () => {
     console.log('Auto-auth plugin initialized');
   });
