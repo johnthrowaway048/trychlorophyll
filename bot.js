@@ -481,57 +481,70 @@ async function executeSteps(username, steps) {
 }
 
 // ----------------- CHAT HANDLER (For conversation only) -----------------
-bot.on('messagestr', async (msgText, position, jsonMsg, sender, verified) => {
-  // Focus only on public chat
-  if (position !== 'chat') return;
+bot.on('chat', async (username, chatMessage) => {
+  // Discord-originated messages (with usernames)
+  if (!username || username === bot.username) return;
+  if (ignoredPlayers.includes(username)) return;
 
-  let username;
-  let message = msgText;
+  await handleIncoming({
+    source: 'chat',
+    sender: username,
+    text: chatMessage
+  });
+});
 
-  // Attempt to extract username from system-formatted messages
-  const match = message.match(/^<?(\w+)>?\s*(.*)/);
-  if (match) {
-    username = match[1];
-    message = match[2];
-  } else {
-    return;
-  }
+bot.on('messagestr', async (fullMessage, position) => {
+  // Only handle non-chat (system) messages here
+  if (position === 'chat') return;
 
-  // Skip our own messages or ignored players
-  if (!username || username === bot.username || ignoredPlayers.includes(username)) return;
+  await handleIncoming({
+    source: 'system',
+    sender: null, // no username available
+    text: fullMessage
+  });
+});
 
-  console.log(`[CHAT] ${username}: ${message}`);
+async function handleIncoming({ source, sender, text }) {
+  console.log(`[${source.toUpperCase()}]${sender ? ` ${sender}` : ''}: ${text}`);
 
-  const msgLower = message.toLowerCase();
-  if (!botNames.some(n => msgLower.includes(n.toLowerCase()))) return;
+  // Skip ignored players for chat source
+  if (source === 'chat' && ignoredPlayers.includes(sender)) return;
 
-  console.log(`Mentioned by ${username} in chat`);
+  // Check for mentions in chat or system messages
+  const textLower = text.toLowerCase();
+  const mentioned = botNames.some(n => textLower.includes(n.toLowerCase()));
+  if (!mentioned) return;
 
-  // Manage memory
-  memory.push({ role: 'user', content: `${username}: ${message}` });
+  console.log(`Mentioned in ${source} by ${sender || 'SYSTEM'}`);
+
+  memory.push({ role: 'user', content: `${sender ? sender + ': ' : ''}${text}` });
   while (memory.length > 50) memory.shift();
 
   const convoPrompt = `You are Phyll, a helpful Minecraft bot assistant.
-Owner: ${ownerName}. Currently trusted: ${trustedPlayers.join(', ')}.
+Owner: ${ownerName}. Trusted: ${trustedPlayers.join(', ')}.
 You are loyal to your owner and helpful to trusted players.
-This is public chat, so only respond conversationally - no commands or instructions.
-Respond briefly and naturally to: "${message}"
-Be friendly but don't be overly chatty. If someone is rude, snap back.`;
+This is ${source === 'chat' ? 'public' : 'system'} context, so respond conversationally.
+Respond briefly and naturally to: "${text}"`;
 
   try {
     const reply = await cerebrasChat(convoPrompt, { max_tokens: 100 });
-    let truncatedReply = (reply && !reply.includes("trouble thinking"))
-      ? (reply.length > 100 ? reply.substring(0, 97) + "..." : reply)
-      : "*thinking...*";
+    let finalReply = '';
 
-    bot.chat(truncatedReply);
-    memory.push({ role: 'assistant', content: truncatedReply });
+    if (reply && !reply.includes("trouble thinking")) {
+      finalReply = reply.length > 100 ? reply.slice(0, 97) + "..." : reply;
+    } else {
+      finalReply = "*thinking...*";
+    }
+
+    bot.chat(finalReply);
+    memory.push({ role: 'assistant', content: finalReply });
     saveMemory();
-  } catch (e) {
-    console.error('Conversation error:', e.message);
+  } catch (err) {
+    console.error('Conversation error:', err.message);
     bot.chat("My brain is a bit fuzzy right now.");
   }
-});
+}
+
 
 
 // ----------------- WHISPER HANDLER (For commands and instructions) -----------------
