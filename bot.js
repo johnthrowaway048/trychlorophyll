@@ -481,63 +481,58 @@ async function executeSteps(username, steps) {
 }
 
 // ----------------- CHAT HANDLER (For conversation only) -----------------
-bot.on('chat', async (username, message) => {
-  // Handle system messages that might not have a username
-  if (!username) { 
-    const match = message.match(/^<?(\w+)>?\s*(.*)/)
-    if (match) { 
-      username = match[1]
-      message = match[2]
-    } else { 
-      return // Skip system messages we can't parse
-    }
-  }
-  
-  // Skip bot's own messages
-  if (!username || username === bot.username) return
-  
-  // Skip ignored players
-  if (ignoredPlayers.includes(username)) return
+bot.on('messagestr', async (msgText, position, jsonMsg, sender, verified) => {
+  // Focus only on public chat
+  if (position !== 'chat') return;
 
-  console.log(`[CHAT] ${username}: ${message}`)
+  let username;
+  let message = msgText;
 
-  // Check if bot was mentioned
-  const msgLower = message.toLowerCase()
-  const mentioned = botNames.some(n => msgLower.includes(n.toLowerCase()))
-  if (!mentioned) return
-
-  console.log(`Mentioned by ${username} in chat`)
-
-  // Add message to memory (with length limit)
-  memory.push({ role: 'user', content: `${username}: ${message}` })
-  while (memory.length > 50) {
-    memory.shift()
+  // Attempt to extract username from system-formatted messages
+  const match = message.match(/^<?(\w+)>?\s*(.*)/);
+  if (match) {
+    username = match[1];
+    message = match[2];
+  } else {
+    return;
   }
 
-  // Generate conversational response (no commands in public chat)
+  // Skip our own messages or ignored players
+  if (!username || username === bot.username || ignoredPlayers.includes(username)) return;
+
+  console.log(`[CHAT] ${username}: ${message}`);
+
+  const msgLower = message.toLowerCase();
+  if (!botNames.some(n => msgLower.includes(n.toLowerCase()))) return;
+
+  console.log(`Mentioned by ${username} in chat`);
+
+  // Manage memory
+  memory.push({ role: 'user', content: `${username}: ${message}` });
+  while (memory.length > 50) memory.shift();
+
   const convoPrompt = `You are Phyll, a helpful Minecraft bot assistant.
 Owner: ${ownerName}. Currently trusted: ${trustedPlayers.join(', ')}.
 You are loyal to your owner and helpful to trusted players.
 This is public chat, so only respond conversationally - no commands or instructions.
-Respond briefly and naturally (1-2 sentences max) to: "${message}"
-Be friendly but don't be overly chatty. If someone is rude, snap back.`
+Respond briefly and naturally to: "${message}"
+Be friendly but don't be overly chatty. If someone is rude, snap back.`;
 
   try {
-    const reply = await cerebrasChat(convoPrompt, { max_tokens: 100 })
-    if (reply && !reply.includes("trouble thinking")) {
-      // Ensure response isn't too long for Minecraft chat
-      const truncatedReply = reply.length > 100 ? reply.substring(0, 97) + "..." : reply
-      bot.chat(truncatedReply)
-      memory.push({ role: 'assistant', content: truncatedReply })
-      saveMemory()
-    } else {
-      bot.chat("*thinking...*")
-    }
+    const reply = await cerebrasChat(convoPrompt, { max_tokens: 100 });
+    let truncatedReply = (reply && !reply.includes("trouble thinking"))
+      ? (reply.length > 100 ? reply.substring(0, 97) + "..." : reply)
+      : "*thinking...*";
+
+    bot.chat(truncatedReply);
+    memory.push({ role: 'assistant', content: truncatedReply });
+    saveMemory();
   } catch (e) {
-    console.error('Conversation error:', e.message)
-    bot.chat("My brain is a bit fuzzy right now.")
+    console.error('Conversation error:', e.message);
+    bot.chat("My brain is a bit fuzzy right now.");
   }
-})
+});
+
 
 // ----------------- WHISPER HANDLER (For commands and instructions) -----------------
 bot.on('whisper', async (username, message) => {
