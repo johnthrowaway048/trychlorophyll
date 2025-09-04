@@ -4,7 +4,126 @@ import minecraftData from 'minecraft-data'
 import AutoAuth from 'mineflayer-auto-auth'
 import fs from 'fs'
 import { config } from 'dotenv'
+import http from 'http'
+import url from 'url'
+
 config()
+
+// ----------------- RENDER WEB SERVICE SETUP -----------------
+const PORT = process.env.PORT || 3000
+
+// Bot status tracking
+let botStatus = {
+  status: 'starting',
+  lastActivity: Date.now(),
+  startTime: Date.now()
+}
+
+// Create HTTP server for Render
+const server = http.createServer((req, res) => {
+  const parsedUrl = url.parse(req.url, true)
+  
+  res.setHeader('Content-Type', 'application/json')
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200)
+    res.end()
+    return
+  }
+
+  switch (parsedUrl.pathname) {
+    case '/':
+    case '/health':
+      res.writeHead(200)
+      res.end(JSON.stringify({
+        status: 'ok',
+        bot: bot?.username || 'not connected',
+        botStatus: botStatus.status,
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        connected: bot?.player ? true : false,
+        position: bot?.entity?.position || null,
+        health: bot?.health || null,
+        food: bot?.food || null,
+        trustedPlayers: trustedPlayers.length,
+        lastActivity: botStatus.lastActivity,
+        timestamp: new Date().toISOString()
+      }))
+      break
+    
+    case '/status':
+      if (!bot) {
+        res.writeHead(503)
+        res.end(JSON.stringify({ error: 'Bot not initialized' }))
+        return
+      }
+      
+      res.writeHead(200)
+      res.end(JSON.stringify({
+        username: bot.username,
+        connected: bot.player ? true : false,
+        botStatus: botStatus.status,
+        position: bot.entity?.position || null,
+        health: bot.health || null,
+        food: bot.food || null,
+        experience: bot.experience || null,
+        gameMode: bot.player?.gamemode || null,
+        dimension: bot.game?.dimension || null,
+        weather: bot.isRaining ? 'raining' : 'clear',
+        timeOfDay: bot.time?.timeOfDay || null,
+        trustedPlayers,
+        ignoredPlayers: ignoredPlayers.length,
+        memoryEntries: memory.length,
+        lastActivity: new Date(botStatus.lastActivity).toISOString(),
+        uptime: Date.now() - botStatus.startTime
+      }))
+      break
+    
+    case '/logs':
+      res.writeHead(200)
+      res.end(JSON.stringify({
+        recentMemory: memory.slice(-10),
+        trustedPlayers,
+        ignoredPlayersCount: ignoredPlayers.length,
+        botStatus: botStatus.status,
+        lastActivity: new Date(botStatus.lastActivity).toISOString()
+      }))
+      break
+    
+    default:
+      res.writeHead(404)
+      res.end(JSON.stringify({ error: 'Not found' }))
+  }
+})
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`HTTP server listening on port ${PORT}`)
+  console.log(`Health check available at: http://localhost:${PORT}/health`)
+})
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down gracefully...')
+  server.close(() => {
+    if (bot) {
+      bot.quit('Server shutting down')
+    }
+    process.exit(0)
+  })
+})
+
+process.on('SIGINT', () => {
+  console.log('SIGINT received, shutting down gracefully...')
+  server.close(() => {
+    if (bot) {
+      bot.quit('Server shutting down')
+    }
+    process.exit(0)
+  })
+})
 
 // ----------------- SETTINGS -----------------
 const ownerName = process.env.OWNER_NAME || 'TryChloroform'
@@ -82,9 +201,9 @@ async function cerebrasChat(prompt, options = {}) {
         "Authorization": `Bearer ${process.env.CEREBRAS_API_KEY}`
       },
       body: JSON.stringify({
-        model: options.model || "llama3.3-70b",
+        model: options.model || "llama3.1-8b",
         messages: messages,
-        max_tokens: options.max_tokens || 250,
+        max_tokens: options.max_tokens || 150,
         temperature: options.temperature || 0.7,
         stream: false
       })
@@ -144,14 +263,23 @@ bot.on('end', () => {
 // Update activity on any chat
 bot.on('chat', () => {
   botStatus.lastActivity = Date.now()
+  if (botStatus.status !== 'connected') {
+    botStatus.status = 'connected'
+  }
 })
 
 bot.on('whisper', () => {
   botStatus.lastActivity = Date.now()
+  if (botStatus.status !== 'connected') {
+    botStatus.status = 'connected'
+  }
 })
 
 bot.once('spawn', async () => {
   console.log(`Bot spawned as ${bot.username} at ${bot.entity.position}`)
+  botStatus.status = 'connected'
+  botStatus.lastActivity = Date.now()
+  
   const mcData = minecraftData(bot.version)
 
   try { 
@@ -535,7 +663,7 @@ bot.on('whisper', async (username, message) => {
 
   // Block untrusted players from using action commands
   if (!isTrusted && /\b(follow|goto|come|hold|drop|tp|tpa|wait|mine|build|attack)\b/i.test(msgLower)) {
-    await sendWhisperMessage(username, `Sorry, only trusted players can give me commands. Ask ${ownerName}!`)
+    bot.whisper(username, `Sorry, only trusted players can give me commands. Ask ${ownerName}!`)
     return
   }
 
@@ -570,3 +698,19 @@ Be friendly and helpful. If it's a question, answer it. If it's conversation, re
     bot.whisper(username, "My brain is a bit fuzzy right now.")
   }
 })
+
+// Keep the process alive
+setInterval(() => {
+  // Heartbeat to prevent process from sleeping
+  // Also update status if bot seems inactive
+  if (Date.now() - botStatus.lastActivity > 300000) { // 5 minutes
+    if (bot && bot.player) {
+      botStatus.status = 'idle'
+    }
+  }
+}, 25000)
+
+console.log('Minecraft bot starting up...')
+console.log(`Monitoring for mentions of: ${botNames.join(', ')} in chat`)
+console.log(`Commands and instructions via whispers only`)
+console.log(`Owner: ${ownerName}`)
